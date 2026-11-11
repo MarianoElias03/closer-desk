@@ -1,6 +1,5 @@
-import { getSettings, db } from '$lib/server/db.js';
+import { db } from '$lib/server/db.js';
 export function load() {
-  const s = getSettings();
   const counts = {
     calls: db.prepare("SELECT COUNT(*) n FROM calls WHERE status != 'cancelled'").get().n,
     recordings: db.prepare('SELECT COUNT(*) n FROM fathom').get().n,
@@ -8,5 +7,5 @@ export function load() {
     sdrDays: db.prepare('SELECT COUNT(*) n FROM sdr_days').get().n,
     closeDays: db.prepare('SELECT COUNT(*) n FROM close_days').get().n
   };
-  return { keywords: s.keywords, counts };
+  return { counts };
 }

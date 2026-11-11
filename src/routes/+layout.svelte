@@ -6,6 +6,7 @@
   import Toasts from '$lib/components/Toasts.svelte';
   import { toast } from '$lib/toast.svelte.js';
   import { relative } from '$lib/fmt.js';
+  import OfferSwitcher from '$lib/components/OfferSwitcher.svelte';
 
   let { data, children } = $props();
   let syncing = $state(false);
@@ -16,10 +17,18 @@
     { href: '/closing', label: 'Closing', icon: 'handshake' },
     { href: '/calls', label: 'Calls', icon: 'list' },
     { href: '/calendar', label: 'Calendar', icon: 'calendar' },
+    { href: '/overall', label: 'Overall', icon: 'chart' },
     { href: '/settings', label: 'Settings', icon: 'settings' }
   ];
 
   const active = (href) => (href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href));
+
+  // Another tab switched offer: reload this one so it never writes into the wrong offer.
+  function checkOffer() {
+    if (document.visibilityState === 'hidden') return;
+    const id = Number(document.cookie.match(/(?:^|; )offer=(\d+)/)?.[1]);
+    if (id && id !== data.offer.id) invalidateAll();
+  }
 
   async function sync() {
     syncing = true;
@@ -36,12 +45,16 @@
   }
 </script>
 
+<svelte:window onfocus={checkOffer} />
+<svelte:document onvisibilitychange={checkOffer} />
+
 <div class="shell">
   <aside class="rail">
     <a class="brand" href="/" aria-label="Closer Desk home">
       <span class="mark" aria-hidden="true"><i class="t-red"></i><i class="t-blue"></i><i class="t-yellow"></i><i class="t-green"></i></span>
-      <span class="name">Closer Desk<small>CB Fitness</small></span>
+      <span class="name">Closer Desk<small>Sales tracker</small></span>
     </a>
+    <div class="offer"><OfferSwitcher offer={data.offer} offers={data.offers} /></div>
     <nav>
       {#each nav as n}
         <a href={n.href} class:active={active(n.href)} aria-current={active(n.href) ? 'page' : undefined}>
@@ -60,6 +73,7 @@
   </aside>
 
   <main class:loading={!!navigating.to}>
+    <div class="offer-m"><OfferSwitcher offer={data.offer} offers={data.offers} compact /></div>
     {@render children()}
   </main>
 </div>
@@ -123,6 +137,12 @@
   nav {
     display: grid;
     gap: 2px;
+  }
+  .offer {
+    margin: -6px 0 -4px;
+  }
+  .offer-m {
+    display: none;
   }
   nav a {
     position: relative;
@@ -212,8 +232,13 @@
       border-top: 1px solid var(--line-2);
     }
     .brand,
-    .sync {
+    .sync,
+    .offer {
       display: none;
+    }
+    .offer-m {
+      display: block;
+      margin-bottom: 16px;
     }
     nav {
       grid-auto-flow: column;

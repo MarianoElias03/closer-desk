@@ -1,4 +1,4 @@
-import { db, getSettings, setSetting } from './db.js';
+import { db, getSettings, setSetting, listOffers, resolveOffer } from './db.js';
 
 const env = process.env;
 
@@ -52,9 +52,24 @@ function matchKeyword(title, keywords) {
   return keywords.find((k) => lower.includes(k.toLowerCase())) || null;
 }
 
+// Each offer lists the event titles that are its calls. When several offers match the same title,
+// the most recently opened one gets it (you can move a call to another offer from its drawer).
+function offerMatcher() {
+  const current = resolveOffer()?.id;
+  const offers = listOffers({ includeArchived: false })
+    .map((o) => ({ id: o.id, keywords: o.keywords.split(',').map((k) => k.trim()).filter(Boolean) }))
+    .sort((a, b) => (b.id === current) - (a.id === current));
+  return (title) => {
+    for (const o of offers) {
+      const kind = matchKeyword(title, o.keywords);
+      if (kind) return { kind, offerId: o.id };
+    }
+    return null;
+  };
+}
+
 export async function syncCalendar() {
-  const s = getSettings();
-  const keywords = s.keywords.split(',').map((k) => k.trim()).filter(Boolean);
+  const match = offerMatcher();
   const token = await googleAccessToken();
   const timeMin = new Date(Date.now() - 120 * 864e5).toISOString();
   const timeMax = new Date(Date.now() + 60 * 864e5).toISOString();
@@ -62,8 +77,8 @@ export async function syncCalendar() {
   let seen = 0;
   let kept = 0;
   const upsert = db.prepare(`
-    INSERT INTO calls(id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, updated_at)
-    VALUES(@id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, 'calendar', @now)
+    INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, updated_at)
+    VALUES(@id, @offer_id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, 'calendar', @now)
     ON CONFLICT(id) DO UPDATE SET title=excluded.title, prospect=excluded.prospect,
       email=COALESCE(excluded.email, calls.email), phone=COALESCE(excluded.phone, calls.phone),
       start=excluded.start, end=excluded.end, join_url=excluded.join_url, description=excluded.description,
@@ -87,8 +102,9 @@ export async function syncCalendar() {
       for (const ev of items) {
         seen++;
         const title = ev.summary || '';
-        const kind = matchKeyword(title, keywords);
-        if (!kind || !ev.start?.dateTime) continue;
+        const hit = match(title);
+        if (!hit || !ev.start?.dateTime) continue;
+        const { kind, offerId } = hit;
         kept++;
         ids.add(ev.id);
         const desc = ev.description || '';
@@ -96,6 +112,7 @@ export async function syncCalendar() {
         const descEmail = desc.match(/Email:-\s*(\S+@\S+)/)?.[1] || null;
         upsert.run({
           id: ev.id,
+          offer_id: offerId,
           title,
           prospect: guest?.displayName?.trim() || prospectFrom(title),
           email: guest?.email || descEmail || null,

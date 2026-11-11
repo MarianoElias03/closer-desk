@@ -1,6 +1,7 @@
 <script>
   import { fly, fade } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
+  import { page } from '$app/state';
   import Icon from './Icon.svelte';
   import OutcomePicker from './OutcomePicker.svelte';
   import { time, dayLabel, duration, money } from '$lib/fmt.js';
@@ -41,6 +42,14 @@
   }
   const saveDetails = () => patch({ cash: Number(cash) || 0, notes, fathomManualUrl: fathomUrl || null }, 'Call saved');
   const linkRec = () => pickRec && patch({ fathomId: pickRec }, 'Recording linked');
+  const offers = $derived((page.data.offers || []).filter((o) => !o.archived || o.id === call.offerId));
+  async function moveTo(e) {
+    const id = Number(e.currentTarget.value);
+    const to = offers.find((o) => o.id === id);
+    if (!to || id === call.offerId) return;
+    await patch({ offerId: id }, `Moved to ${to.name}`);
+    onclose();
+  }
   const unlink = () => patch({ fathomId: null, fathomManualUrl: null }, 'Recording unlinked');
 
   const isPast = $derived(new Date(call.end) < new Date());
@@ -81,6 +90,16 @@
         <input type="number" min="0" step="1" inputmode="decimal" bind:value={cash} placeholder="0" />
       </label>
     </section>
+
+    {#if offers.length > 1}
+      <section>
+        <label class="field">Offer
+          <select value={call.offerId} onchange={moveTo} disabled={saving}>
+            {#each offers as o (o.id)}<option value={o.id}>{o.name}{o.industry ? ` (${o.industry})` : ''}</option>{/each}
+          </select>
+        </label>
+      </section>
+    {/if}
 
     <section>
       <label class="field">Notes

@@ -5,16 +5,7 @@
   import { relative } from '$lib/fmt.js';
 
   let { data } = $props();
-  let keywords = $state(data.keywords);
   let syncing = $state(false);
-
-  async function saveKeywords(e) {
-    e.preventDefault();
-    const r = await fetch('/api/settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ keywords }) });
-    if (!r.ok) return toast('Add at least one keyword', 'error');
-    toast('Keywords saved. Syncing your calendar');
-    await sync();
-  }
   async function sync() {
     syncing = true;
     const r = await fetch('/api/sync', { method: 'POST' }).then((r) => r.json()).catch(() => null);
@@ -65,11 +56,8 @@
 
   <section class="panel">
     <h2>Which calendar events count as calls</h2>
-    <p class="muted">An event shows up as a sales call when its title contains one of these words. Separate them with commas.</p>
-    <form onsubmit={saveKeywords} class="kw">
-      <label class="field">Title keywords<input bind:value={keywords} /></label>
-      <button class="btn">Save keywords</button>
-    </form>
+    <p class="muted">Each offer has its own calendar keywords now. An event becomes a call for <strong>{data.offer.name}</strong> when its title contains one of: <strong>{data.offer.keywords || 'no keywords yet'}</strong>.</p>
+    <a class="btn" href="/offers"><Icon name="layers" size={16} />Edit offers and keywords</a>
   </section>
 
   <section class="panel">
@@ -81,7 +69,7 @@
       <div><dt>Dialling days</dt><dd class="score">{data.counts.sdrDays}</dd></div>
       <div><dt>Closing days</dt><dd class="score">{data.counts.closeDays}</dd></div>
     </dl>
-    <p class="muted small">Your October and November rows were imported from the CB Fitness sheet. The sheet itself is not changed.</p>
+    <p class="muted small">Totals across every offer. Your October and November rows were imported from the CB Fitness sheet. The sheet itself is not changed.</p>
   </section>
 </div>
 

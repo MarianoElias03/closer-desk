@@ -2,7 +2,8 @@ import { closeRange, monthMeta, getSettings, callsRange } from '$lib/server/db.j
 import { dayKey, monthBounds, shiftMonth, dayStartIso, addDays } from '$lib/time.js';
 import { CALL_OUTCOMES } from '$lib/stats.js';
 
-export function load({ url }) {
+export function load({ url, locals }) {
+  const o = locals.offer.id;
   const tz = getSettings().timezone;
   const today = dayKey(Date.now(), tz);
   const month = /^\d{4}-\d{2}$/.test(url.searchParams.get('m') || '') ? url.searchParams.get('m') : today.slice(0, 7);
@@ -11,7 +12,7 @@ export function load({ url }) {
 
   // what the calendar + logged call outcomes say per day
   const fromCalls = {};
-  for (const c of callsRange(dayStartIso(first, tz), dayStartIso(addDays(last, 1), tz))) {
+  for (const c of callsRange(o, dayStartIso(first, tz), dayStartIso(addDays(last, 1), tz))) {
     const d = dayKey(c.start, tz);
     const t = (fromCalls[d] ??= { scheduled: 0, logged: 0, no_show: 0, closed: 0, not_interested: 0, callbacks: 0, unqualified: 0, cash: 0 });
     t.scheduled++;
@@ -24,10 +25,10 @@ export function load({ url }) {
   }
   return {
     month,
-    days: closeRange(first, last),
-    prevDays: closeRange(prev.first, prev.last),
-    meta: monthMeta(month),
-    prevMeta: monthMeta(shiftMonth(month, -1)),
+    days: closeRange(o, first, last),
+    prevDays: closeRange(o, prev.first, prev.last),
+    meta: monthMeta(o, month),
+    prevMeta: monthMeta(o, shiftMonth(month, -1)),
     fromCalls
   };
 }

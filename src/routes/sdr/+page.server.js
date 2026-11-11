@@ -1,6 +1,7 @@
 import { sdrRange, monthMeta, getSettings } from '$lib/server/db.js';
 import { dayKey, monthBounds, shiftMonth } from '$lib/time.js';
-export function load({ url }) {
+export function load({ url, locals }) {
+  const o = locals.offer.id;
   const tz = getSettings().timezone;
   const today = dayKey(Date.now(), tz);
   const month = /^\d{4}-\d{2}$/.test(url.searchParams.get('m') || '') ? url.searchParams.get('m') : today.slice(0, 7);
@@ -8,9 +9,9 @@ export function load({ url }) {
   const prev = monthBounds(shiftMonth(month, -1));
   return {
     month,
-    days: sdrRange(first, last),
-    prevDays: sdrRange(prev.first, prev.last),
-    meta: monthMeta(month),
-    prevMeta: monthMeta(shiftMonth(month, -1))
+    days: sdrRange(o, first, last),
+    prevDays: sdrRange(o, prev.first, prev.last),
+    meta: monthMeta(o, month),
+    prevMeta: monthMeta(o, shiftMonth(month, -1))
   };
 }
