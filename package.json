@@ -1,0 +1,22 @@
+{
+  "name": "closer-desk",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "seed": "node scripts/seed-sheet.js"
+  },
+  "devDependencies": {
+    "@sveltejs/adapter-node": "5.5.8",
+    "@sveltejs/kit": "2.70.4",
+    "@sveltejs/vite-plugin-svelte": "6.2.4",
+    "svelte": "5.57.3",
+    "vite": "7.3.8"
+  },
+  "dependencies": {
+    "better-sqlite3": "12.11.1"
+  }
+}

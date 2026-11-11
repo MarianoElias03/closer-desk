@@ -1,0 +1,20 @@
+[Unit]
+Description=Closer Desk (CB Fitness sales tracker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/closer-desk
+EnvironmentFile=/etc/closer-desk.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=0.0.0.0
+Environment=DATA_DIR=/var/lib/closer-desk
+Environment=PROTOCOL_HEADER=x-forwarded-proto
+Environment=HOST_HEADER=x-forwarded-host
+ExecStart=/usr/local/bin/node build/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
