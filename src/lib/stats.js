@@ -11,6 +11,14 @@ export const SDR_OUTCOMES = [
   { key: 'wrong_no', label: 'Wrong number', short: 'Wrong no.', tone: 'slate' }
 ];
 
+// DM setting: leads who messaged in, how many booked a call, and how those ended up.
+export const DM_OUTCOMES = [
+  { key: 'contacted', label: 'Contacted us', short: 'Contacted', tone: 'iron' },
+  { key: 'booked', label: 'Booked', short: 'Booked', tone: 'blue' },
+  { key: 'converted', label: 'Converted', short: 'Converted', tone: 'green' },
+  { key: 'not_converted', label: 'Not converted', short: 'Not conv.', tone: 'red' }
+];
+
 export const CLOSE_OUTCOMES = [
   { key: 'no_show', label: 'No show', short: 'No show', tone: 'iron' },
   { key: 'closed', label: 'Closed', short: 'Closed', tone: 'green' },
@@ -76,5 +84,24 @@ export function closeSummary(days, daysWorkedOverride) {
     cashPerDay: ratio(sum.cash, daysWorked),
     salesPerDay: ratio(sum.closed, daysWorked),
     cashPerCall: ratio(sum.cash, calls)
+  };
+}
+
+export function dmSummary(days, daysWorkedOverride) {
+  const sum = { contacted: 0, booked: 0, converted: 0, not_converted: 0 };
+  for (const d of days) for (const k in sum) sum[k] += d[k];
+  const decided = sum.converted + sum.not_converted;
+  const activeDays = days.filter((d) => d.contacted + d.booked + d.converted + d.not_converted > 0).length;
+  const daysWorked = daysWorkedOverride ?? activeDays;
+  return {
+    ...sum,
+    decided,
+    bookingRate: ratio(sum.booked, sum.contacted),
+    conversionRate: ratio(sum.converted, decided),
+    convertedPerContact: ratio(sum.converted, sum.contacted),
+    daysWorked,
+    activeDays,
+    contactsPerDay: ratio(sum.contacted, daysWorked),
+    bookingsPerDay: ratio(sum.booked, daysWorked)
   };
 }

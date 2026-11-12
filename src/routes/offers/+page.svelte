@@ -7,7 +7,17 @@
 
   let { data } = $props();
 
-  const blank = () => ({ name: '', industry: data.offer.industry, price: '', keywords: data.offer.keywords, notes: '' });
+  const ROLE_OPTS = [
+    { key: 'dm', label: 'DM Setting', icon: 'chat' },
+    { key: 'sdr', label: 'SDR (dialling)', icon: 'phone' },
+    { key: 'closing', label: 'Closing', icon: 'handshake' }
+  ];
+  const roleLabel = (k) => ROLE_OPTS.find((r) => r.key === k)?.label ?? k;
+  function toggleRole(f, key) {
+    f.roles = f.roles.includes(key) ? f.roles.filter((r) => r !== key) : ROLE_OPTS.map((r) => r.key).filter((r) => r === key || f.roles.includes(r));
+  }
+
+  const blank = () => ({ name: '', industry: data.offer.industry, price: '', keywords: data.offer.keywords, notes: '', roles: ['sdr', 'closing'] });
   let creating = $state(page.url.searchParams.has('new'));
   let draft = $state(blank());
   let editing = $state(null); // offer id
@@ -37,6 +47,7 @@
 
   async function create(e) {
     e.preventDefault();
+    if (!draft.roles.length) return toast('Pick at least one role for the offer', 'error');
     const j = await send('/api/offers', 'POST', draft);
     if (!j) return;
     toast(`${j.offer.name} created and opened`);
@@ -48,10 +59,11 @@
 
   function startEdit(o) {
     editing = o.id;
-    form = { name: o.name, industry: o.industry, price: o.price ?? '', keywords: o.keywords, notes: o.notes };
+    form = { name: o.name, industry: o.industry, price: o.price ?? '', keywords: o.keywords, notes: o.notes, roles: [...o.roles] };
   }
   async function save(e, o) {
     e.preventDefault();
+    if (!form.roles.length) return toast('Pick at least one role for the offer', 'error');
     if (!(await send(`/api/offers/${o.id}`, 'PATCH', form))) return;
     toast('Offer saved');
     editing = null;
@@ -80,6 +92,18 @@
     <label class="field">Offer name<input bind:value={f.name} required maxlength="80" placeholder="12-week coaching program" /></label>
     <label class="field">Industry<input bind:value={f.industry} list="industries" maxlength="80" placeholder="Fitness" /></label>
   </div>
+  <fieldset class="roles">
+    <legend>Your role on this offer</legend>
+    <div class="role-opts">
+      {#each ROLE_OPTS as r}
+        <label class="role" class:on={f.roles.includes(r.key)}>
+          <input type="checkbox" checked={f.roles.includes(r.key)} onchange={() => toggleRole(f, r.key)} />
+          <Icon name={r.icon} size={16} />{r.label}
+        </label>
+      {/each}
+    </div>
+    <p class="faint hint">Pick one or more. Each one adds its own tab for this offer.</p>
+  </fieldset>
   <div class="row2">
     <label class="field">Price (AUD)<input type="number" min="0" step="1" inputmode="decimal" bind:value={f.price} placeholder="Optional" /></label>
     <label class="field">Calendar keywords
@@ -127,7 +151,7 @@
           <div>
             <h2>{o.name}{#if o.id === data.offer.id}<span class="chip t-blue now">Open now</span>{/if}</h2>
             <p class="muted meta">
-              {[o.industry || 'No industry set', o.price != null ? money(o.price) : null].filter(Boolean).join(' · ')}
+              {[o.roles.map(roleLabel).join(' + '), o.industry || 'No industry set', o.price != null ? money(o.price) : null].filter(Boolean).join(' · ')}
             </p>
           </div>
           <div class="acts">
@@ -230,6 +254,61 @@
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 12px;
+  }
+  .roles {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .roles legend {
+    padding: 0;
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .role-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .role {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+  }
+  .role input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .role:hover {
+    color: var(--ink);
+  }
+  .role.on {
+    border-color: var(--blue);
+    background: color-mix(in srgb, var(--blue) 12%, var(--raised));
+    color: var(--ink);
+  }
+  .role:has(input:focus-visible) {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+  .roles .hint {
+    margin: 0;
   }
   .hint {
     margin: -6px 0 0;

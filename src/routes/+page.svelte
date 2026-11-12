@@ -6,7 +6,7 @@
   import StackBar from '$lib/components/StackBar.svelte';
   import CallRow from '$lib/components/CallRow.svelte';
   import CallDrawer from '$lib/components/CallDrawer.svelte';
-  import { SDR_OUTCOMES, sdrSummary, closeSummary, sdrTotal, sdrSpoken } from '$lib/stats.js';
+  import { SDR_OUTCOMES, sdrSummary, closeSummary, dmSummary, sdrTotal, sdrSpoken } from '$lib/stats.js';
   import { pct, money, num, dayLabel, monthLabel } from '$lib/fmt.js';
   import { dayKey } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
@@ -55,7 +55,7 @@
     toast(`Removed one ${SDR_OUTCOMES.find((o) => o.key === key).label.toLowerCase()}`);
   }
   function onkey(e) {
-    if (open || e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!has('sdr') || open || e.target.closest('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
     const i = Number(e.key) - 1;
     if (i >= 0 && i < SDR_OUTCOMES.length) {
       e.preventDefault();
@@ -72,6 +72,8 @@
 
   const sdrM = $derived(sdrSummary(data.sdrMonth, data.meta.sdr));
   const closeM = $derived(closeSummary(data.closeMonth, data.meta.close));
+  const dmM = $derived(dmSummary(data.dmMonth, data.meta.dm));
+  const has = (role) => data.offer.roles.includes(role);
 
   const nextCall = $derived(data.calls.find((c) => new Date(c.end) > new Date()));
   let open = $state(null);
@@ -95,7 +97,8 @@
   </p>
 </header>
 
-<div class="grid">
+<div class="grid" class:solo={!has('sdr')}>
+  {#if has('sdr')}
   <section class="panel dial">
     <div class="dial-head">
       <div>
@@ -128,6 +131,7 @@
       <Stat label="Booked" value={counts.booked} tone="blue" size="sm" />
     </div>
   </section>
+  {/if}
 
   <section class="panel calls">
     <div class="sec-head">
@@ -170,6 +174,18 @@
       <h2>{monthLabel(data.month)} so far</h2>
     </div>
     <div class="month-cols">
+      {#if has('dm')}
+      <a class="mcol" href="/dm">
+        <h3><Icon name="chat" size={16} />DM Setting</h3>
+        <div class="mstats">
+          <Stat label="Contacted us" value={dmM.contacted} />
+          <Stat label="Booked" value={dmM.booked} tone="blue" />
+          <Stat label="Converted" value={dmM.converted} tone="green" />
+          <Stat label="Conversion rate" value={dmM.conversionRate} format={(n) => pct(n)} />
+        </div>
+      </a>
+      {/if}
+      {#if has('sdr')}
       <a class="mcol" href="/sdr">
         <h3><Icon name="phone" size={16} />Dialling</h3>
         <div class="mstats">
@@ -179,6 +195,8 @@
           <Stat label="Booking rate" value={sdrM.bookingRate} format={(n) => pct(n)} />
         </div>
       </a>
+      {/if}
+      {#if has('closing')}
       <a class="mcol" href="/closing">
         <h3><Icon name="handshake" size={16} />Closing</h3>
         <div class="mstats">
@@ -188,6 +206,7 @@
           <Stat label="Cash collected" value={closeM.cash} format={(n) => money(n)} tone="green" />
         </div>
       </a>
+      {/if}
     </div>
   </section>
 </div>
@@ -226,6 +245,9 @@
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
     gap: 20px;
     align-items: start;
+  }
+  .grid.solo {
+    grid-template-columns: minmax(0, 1fr);
   }
   .panel {
     padding: 22px;
@@ -369,7 +391,7 @@
   }
   .month-cols {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     gap: 20px;
   }
   .mcol {

@@ -79,6 +79,15 @@ const DAY_TABLES = {
     cash REAL NOT NULL DEFAULT 0,
     updated_at TEXT,
     PRIMARY KEY (offer_id, date)`,
+  dm_days: `
+    offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+    date TEXT NOT NULL,
+    contacted INTEGER NOT NULL DEFAULT 0,
+    booked INTEGER NOT NULL DEFAULT 0,
+    converted INTEGER NOT NULL DEFAULT 0,
+    not_converted INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (offer_id, date)`,
   month_meta: `
     offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
     month TEXT NOT NULL,
@@ -116,6 +125,8 @@ db.transaction(() => {
       db.exec(`DROP TABLE ${t}_old`);
     }
   }
+  // What you do on each offer. Offers from before this setting keep the two tabs they always had.
+  if (!hasColumn('offers', 'roles')) db.exec("ALTER TABLE offers ADD COLUMN roles TEXT NOT NULL DEFAULT 'sdr,closing'");
   if (!hasColumn('calls', 'offer_id')) db.exec('ALTER TABLE calls ADD COLUMN offer_id INTEGER REFERENCES offers(id)');
   db.prepare('UPDATE calls SET offer_id = ? WHERE offer_id IS NULL').run(first);
   db.exec('CREATE INDEX IF NOT EXISTS calls_offer_start ON calls(offer_id, start)');
@@ -137,6 +148,12 @@ export function setSetting(key, value) {
 
 // ---------- offers ----------
 
+export const ROLES = ['dm', 'sdr', 'closing'];
+const parseRoles = (v) => {
+  const list = Array.isArray(v) ? v : String(v ?? '').split(',');
+  return ROLES.filter((r) => list.map((x) => String(x).trim()).includes(r));
+};
+
 const shapeOffer = (r) =>
   r && {
     id: r.id,
@@ -145,6 +162,7 @@ const shapeOffer = (r) =>
     price: r.price,
     keywords: r.keywords,
     notes: r.notes,
+    roles: parseRoles(r.roles),
     archived: !!r.archived,
     createdAt: r.created_at,
     openedAt: r.opened_at
@@ -176,16 +194,21 @@ function offerFields(o) {
   if ('keywords' in o) out.keywords = cleanKeywords(o.keywords);
   if ('notes' in o) out.notes = String(o.notes ?? '').slice(0, 4000);
   if ('archived' in o) out.archived = o.archived ? 1 : 0;
+  if ('roles' in o) {
+    const roles = parseRoles(o.roles);
+    if (!roles.length) throw new Error('Pick at least one role for the offer');
+    out.roles = roles.join(',');
+  }
   return out;
 }
 
 export function createOffer(o) {
-  const f = { name: '', industry: '', price: null, keywords: '', notes: '', ...offerFields(o) };
+  const f = { name: '', industry: '', price: null, keywords: '', notes: '', roles: 'sdr,closing', ...offerFields(o) };
   if (!f.name) throw new Error('Give the offer a name');
   const now = new Date().toISOString();
   const id = db
     .prepare(
-      'INSERT INTO offers(name, industry, price, keywords, notes, created_at, opened_at) VALUES(@name, @industry, @price, @keywords, @notes, @now, @now)'
+      'INSERT INTO offers(name, industry, price, keywords, notes, roles, created_at, opened_at) VALUES(@name, @industry, @price, @keywords, @notes, @roles, @now, @now)'
     )
     .run({ ...f, now }).lastInsertRowid;
   return getOffer(id);
@@ -213,6 +236,7 @@ export function openOffer(id) {
 // ---------- day tallies (per offer) ----------
 
 const SDR_FIELDS = ['no_answer', 'booked', 'not_interested', 'callback', 'wrong_no'];
+const DM_FIELDS = ['contacted', 'booked', 'converted', 'not_converted'];
 const CLOSE_FIELDS = ['no_show', 'closed', 'not_interested', 'callbacks', 'unqualified', 'cash'];
 
 function upsert(table, fields, offerId, date, values) {
@@ -238,6 +262,7 @@ function upsert(table, fields, offerId, date, values) {
 
 export const upsertSdr = (offerId, date, v) => upsert('sdr_days', SDR_FIELDS, offerId, date, v);
 export const upsertClose = (offerId, date, v) => upsert('close_days', CLOSE_FIELDS, offerId, date, v);
+export const upsertDm = (offerId, date, v) => upsert('dm_days', DM_FIELDS, offerId, date, v);
 
 // offerId null = every offer (used by the Overall page)
 const offerWhere = (offerId) => (offerId == null ? '' : 'offer_id = @offerId AND ');
@@ -252,13 +277,18 @@ export function closeRange(offerId, from, to) {
     .prepare(`SELECT * FROM close_days WHERE ${offerWhere(offerId)}date >= @from AND date <= @to ORDER BY date`)
     .all({ offerId, from, to });
 }
+export function dmRange(offerId, from, to) {
+  return db
+    .prepare(`SELECT * FROM dm_days WHERE ${offerWhere(offerId)}date >= @from AND date <= @to ORDER BY date`)
+    .all({ offerId, from, to });
+}
 export function sdrDay(offerId, date) {
   return db.prepare('SELECT * FROM sdr_days WHERE offer_id = ? AND date = ?').get(offerId, date) ?? null;
 }
 
 export function monthMeta(offerId, month) {
   const rows = db.prepare('SELECT kind, days_worked FROM month_meta WHERE offer_id = ? AND month = ?').all(offerId, month);
-  const m = { sdr: null, close: null };
+  const m = { sdr: null, close: null, dm: null };
   for (const r of rows) m[r.kind] = r.days_worked;
   return m;
 }

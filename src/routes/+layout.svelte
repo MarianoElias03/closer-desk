@@ -11,15 +11,18 @@
   let { data, children } = $props();
   let syncing = $state(false);
 
-  const nav = [
+  const NAV = [
     { href: '/', label: 'Today', icon: 'today' },
-    { href: '/sdr', label: 'Dialling', icon: 'phone' },
-    { href: '/closing', label: 'Closing', icon: 'handshake' },
+    { href: '/dm', label: 'DM Setting', icon: 'chat', role: 'dm' },
+    { href: '/sdr', label: 'Dialling', icon: 'phone', role: 'sdr' },
+    { href: '/closing', label: 'Closing', icon: 'handshake', role: 'closing' },
     { href: '/calls', label: 'Calls', icon: 'list' },
     { href: '/calendar', label: 'Calendar', icon: 'calendar' },
     { href: '/overall', label: 'Overall', icon: 'chart' },
     { href: '/settings', label: 'Settings', icon: 'settings' }
   ];
+  // Only the tabs for the roles picked on the open offer.
+  const nav = $derived(NAV.filter((n) => !n.role || data.offer.roles.includes(n.role)));
 
   const active = (href) => (href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href));
 
