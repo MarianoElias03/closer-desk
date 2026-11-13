@@ -5,6 +5,7 @@
   import DayChart from '$lib/components/DayChart.svelte';
   import LogTable from '$lib/components/LogTable.svelte';
   import DaysWorked from '$lib/components/DaysWorked.svelte';
+  import DmPad from '$lib/components/DmPad.svelte';
   import { DM_OUTCOMES, dmSummary } from '$lib/stats.js';
   import { pct, num } from '$lib/fmt.js';
   import { monthBounds, addDays } from '$lib/time.js';
@@ -57,6 +58,8 @@
   <MonthSwitch month={data.month} base="/dm" />
 </header>
 
+<div class="pad-slot"><DmPad today={data.today} day={data.dmToday} /></div>
+
 <section class="panel board">
   <div class="kpis">
     <Stat size="lg" label="Leads who contacted us" value={s.contacted} />
@@ -97,6 +100,9 @@
   .top p {
     margin: 8px 0 0;
     max-width: 60ch;
+  }
+  .pad-slot {
+    margin-bottom: 18px;
   }
   .panel {
     padding: 22px;

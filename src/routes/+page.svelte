@@ -6,6 +6,7 @@
   import StackBar from '$lib/components/StackBar.svelte';
   import CallRow from '$lib/components/CallRow.svelte';
   import CallDrawer from '$lib/components/CallDrawer.svelte';
+  import DmPad from '$lib/components/DmPad.svelte';
   import { SDR_OUTCOMES, sdrSummary, closeSummary, dmSummary, sdrTotal, sdrSpoken } from '$lib/stats.js';
   import { pct, money, num, dayLabel, monthLabel } from '$lib/fmt.js';
   import { dayKey } from '$lib/time.js';
@@ -97,7 +98,10 @@
   </p>
 </header>
 
-<div class="grid" class:solo={!has('sdr')}>
+<div class="grid" class:solo={!has('sdr') && !has('dm')}>
+  {#if !has('sdr') && has('dm')}
+  <DmPad today={data.today} day={data.dmToday} />
+  {/if}
   {#if has('sdr')}
   <section class="panel dial">
     <div class="dial-head">

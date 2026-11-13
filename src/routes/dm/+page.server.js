@@ -1,4 +1,4 @@
-import { dmRange, monthMeta, getSettings } from '$lib/server/db.js';
+import { dmRange, dmDay, monthMeta, getSettings } from '$lib/server/db.js';
 import { dayKey, monthBounds, shiftMonth } from '$lib/time.js';
 export function load({ url, locals }) {
   const o = locals.offer.id;
@@ -9,6 +9,7 @@ export function load({ url, locals }) {
   const prev = monthBounds(shiftMonth(month, -1));
   return {
     month,
+    dmToday: dmDay(o, today),
     days: dmRange(o, first, last),
     prevDays: dmRange(o, prev.first, prev.last),
     meta: monthMeta(o, month),

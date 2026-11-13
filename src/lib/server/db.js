@@ -282,6 +282,9 @@ export function dmRange(offerId, from, to) {
     .prepare(`SELECT * FROM dm_days WHERE ${offerWhere(offerId)}date >= @from AND date <= @to ORDER BY date`)
     .all({ offerId, from, to });
 }
+export function dmDay(offerId, date) {
+  return db.prepare('SELECT * FROM dm_days WHERE offer_id = ? AND date = ?').get(offerId, date) ?? null;
+}
 export function sdrDay(offerId, date) {
   return db.prepare('SELECT * FROM sdr_days WHERE offer_id = ? AND date = ?').get(offerId, date) ?? null;
 }
