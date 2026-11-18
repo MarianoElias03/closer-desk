@@ -100,7 +100,7 @@
 
 <div class="grid" class:solo={!has('sdr') && !has('dm')}>
   {#if !has('sdr') && has('dm')}
-  <DmPad today={data.today} day={data.dmToday} />
+  <DmPad today={data.today} day={data.dmToday} leads={data.dmOpenLeads} />
   {/if}
   {#if has('sdr')}
   <section class="panel dial">

@@ -418,3 +418,135 @@ export function unlinkedRecordings(limit = 40) {
     )
     .all(limit);
 }
+
+// ---------- DM leads ----------
+// Each lead is one person who messaged in, saved by IG handle or name. Moving a lead along
+// (booked, converted, not converted) also bumps the matching day tally, on the day it happened,
+// so the daily numbers and the lead list never disagree.
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS dm_leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+  handle TEXT NOT NULL,
+  contacted_on TEXT NOT NULL,
+  booked_on TEXT,
+  outcome TEXT,
+  outcome_on TEXT,
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dm_leads_offer ON dm_leads(offer_id, contacted_on);
+`);
+
+export const LEAD_STATUSES = ['contacted', 'booked', 'converted', 'not_converted'];
+
+function bumpDm(offerId, date, key, delta) {
+  const cur = dmDay(offerId, date) || { contacted: 0, booked: 0, converted: 0, not_converted: 0 };
+  cur[key] = Math.max(0, (cur[key] || 0) + delta);
+  upsertDm(offerId, date, cur);
+}
+
+const shapeLead = (r) =>
+  r && {
+    id: r.id,
+    handle: r.handle,
+    contactedOn: r.contacted_on,
+    bookedOn: r.booked_on,
+    outcome: r.outcome,
+    outcomeOn: r.outcome_on,
+    status: r.outcome || (r.booked_on ? 'booked' : 'contacted'),
+    notes: r.notes,
+    updatedAt: r.updated_at
+  };
+
+export function getLead(offerId, id) {
+  return shapeLead(db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId));
+}
+
+export function dmLeads(offerId, { open = false, limit = 1000 } = {}) {
+  return db
+    .prepare(`SELECT * FROM dm_leads WHERE offer_id = ? ${open ? 'AND outcome IS NULL' : ''} ORDER BY updated_at DESC, id DESC LIMIT ?`)
+    .all(offerId, limit)
+    .map(shapeLead);
+}
+
+export function createLead(offerId, handle, date) {
+  const h = String(handle || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+  if (!h) throw new Error('Add their IG handle or name');
+  return db.transaction(() => {
+    const now = new Date().toISOString();
+    const id = db
+      .prepare('INSERT INTO dm_leads(offer_id, handle, contacted_on, created_at, updated_at) VALUES(?, ?, ?, ?, ?)')
+      .run(offerId, h, date, now, now).lastInsertRowid;
+    bumpDm(offerId, date, 'contacted', 1);
+    return getLead(offerId, id);
+  })();
+}
+
+/** Move a lead to a status. `today` is the day the change counts on. */
+export function setLeadStatus(offerId, id, status, today) {
+  if (!LEAD_STATUSES.includes(status)) throw new Error('Unknown status');
+  return db.transaction(() => {
+    const r = db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
+    if (!r) return null;
+    let { booked_on, outcome, outcome_on } = r;
+    // take back what no longer applies
+    if (outcome && outcome !== status) {
+      bumpDm(offerId, outcome_on, outcome, -1);
+      outcome = outcome_on = null;
+    }
+    if (status === 'contacted' && booked_on) {
+      bumpDm(offerId, booked_on, 'booked', -1);
+      booked_on = null;
+    }
+    // add what's new
+    if (status === 'booked' && !booked_on) {
+      booked_on = today;
+      bumpDm(offerId, today, 'booked', 1);
+    }
+    if ((status === 'converted' || status === 'not_converted') && outcome !== status) {
+      outcome = status;
+      outcome_on = today;
+      bumpDm(offerId, today, status, 1);
+    }
+    db.prepare('UPDATE dm_leads SET booked_on = ?, outcome = ?, outcome_on = ?, updated_at = ? WHERE id = ?').run(
+      booked_on,
+      outcome,
+      outcome_on,
+      new Date().toISOString(),
+      r.id
+    );
+    return getLead(offerId, r.id);
+  })();
+}
+
+export function updateLead(offerId, id, patch) {
+  const sets = [];
+  const vals = { id: Number(id), offerId, now: new Date().toISOString() };
+  if ('handle' in patch) {
+    const h = String(patch.handle || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (!h) throw new Error('Add their IG handle or name');
+    sets.push('handle = @handle');
+    vals.handle = h;
+  }
+  if ('notes' in patch) {
+    sets.push('notes = @notes');
+    vals.notes = String(patch.notes || '').slice(0, 2000);
+  }
+  if (sets.length) db.prepare(`UPDATE dm_leads SET ${sets.join(', ')}, updated_at = @now WHERE id = @id AND offer_id = @offerId`).run(vals);
+  return getLead(offerId, id);
+}
+
+/** Remove a lead and take back everything it added to the day tallies. */
+export function deleteLead(offerId, id) {
+  db.transaction(() => {
+    const r = db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
+    if (!r) return;
+    bumpDm(offerId, r.contacted_on, 'contacted', -1);
+    if (r.booked_on) bumpDm(offerId, r.booked_on, 'booked', -1);
+    if (r.outcome) bumpDm(offerId, r.outcome_on, r.outcome, -1);
+    db.prepare('DELETE FROM dm_leads WHERE id = ?').run(r.id);
+  })();
+}

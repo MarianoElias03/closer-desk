@@ -6,6 +6,7 @@
   import LogTable from '$lib/components/LogTable.svelte';
   import DaysWorked from '$lib/components/DaysWorked.svelte';
   import DmPad from '$lib/components/DmPad.svelte';
+  import LeadList from '$lib/components/LeadList.svelte';
   import { DM_OUTCOMES, dmSummary } from '$lib/stats.js';
   import { pct, num } from '$lib/fmt.js';
   import { monthBounds, addDays } from '$lib/time.js';
@@ -53,12 +54,14 @@
 <header class="top">
   <div>
     <h1>DM Setting</h1>
-    <p class="muted">One row per day. Log how many leads contacted you, how many you booked, and how many converted or didn't.</p>
+    <p class="muted">Every lead who messages in, saved by IG handle or name, and your daily numbers. Moving a lead along updates the day it happened.</p>
   </div>
   <MonthSwitch month={data.month} base="/dm" />
 </header>
 
-<div class="pad-slot"><DmPad today={data.today} day={data.dmToday} /></div>
+<div class="pad-slot"><DmPad today={data.today} day={data.dmToday} leads={data.leads} /></div>
+
+<LeadList leads={data.leads} today={data.today} />
 
 <section class="panel board">
   <div class="kpis">
