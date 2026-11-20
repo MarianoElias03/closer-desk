@@ -60,11 +60,19 @@
     try {
       saved = JSON.parse(localStorage.getItem(storeKey) || 'null');
     } catch {}
-    chosen = Array.isArray(saved) ? saved : [...DEFAULT_COLUMNS];
+    if (Array.isArray(saved?.cols)) {
+      // current format
+    } else if (Array.isArray(saved)) {
+      // layouts saved before the Reason column existed: put it next to Status once
+      const cols = [...saved];
+      if (!cols.includes('reason')) cols.splice(cols.includes('status') ? cols.indexOf('status') + 1 : cols.length, 0, 'reason');
+      saved = { v: 2, cols };
+    } else saved = null;
+    chosen = saved ? saved.cols : [...DEFAULT_COLUMNS];
   });
   function persist() {
     try {
-      localStorage.setItem(storeKey, JSON.stringify(chosen));
+      localStorage.setItem(storeKey, JSON.stringify({ v: 2, cols: chosen }));
     } catch {}
   }
   const visible = $derived(
@@ -260,6 +268,8 @@
                     {#if l.call && !l.call.cancelled}
                       <span class="two-line"><span>{whenLabel(l.call.start, tz, false)}</span><span class="faint">{callOutcome(l.call.outcome).key === 'pending' ? 'Not logged' : callOutcome(l.call.outcome).label}</span></span>
                     {/if}
+                  {:else if col.key === 'reason'}
+                    {#if l.reason}<span class="rsn">{l.reason}</span>{/if}
                   {:else if col.key === 'consent'}
                     {#if l.doNotContact?.length}<span class="dnc-cell">{consentLabel(l.doNotContact)}</span>{/if}
                   {:else if col.key === 'notes'}
@@ -597,6 +607,10 @@
     letter-spacing: 0.03em;
     text-transform: uppercase;
     vertical-align: 1px;
+  }
+  .rsn {
+    color: var(--ink-2);
+    font-weight: 600;
   }
   .dnc-cell {
     color: var(--red);

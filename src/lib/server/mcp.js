@@ -20,9 +20,10 @@ import {
   CHANNELS,
   ENTRY_TYPES,
   linkLeadCalls,
-  setConsent
+  setConsent,
+  reasonsUsed
 } from './db.js';
-import { FILTERS, listLeads, STAGES, entryLabel, wallClock } from '../leads.js';
+import { FILTERS, listLeads, STAGES, entryLabel, wallClock, REASONS } from '../leads.js';
 import { sdrSummary } from '../stats.js';
 import { dayKey, monthBounds } from '../time.js';
 
@@ -58,6 +59,7 @@ const brief = (l) => ({
   category: l.category,
   score: l.score,
   status: STAGES[l.stage]?.label || l.stage,
+  ...(l.reason ? { status_reason: l.reason } : {}),
   ...(l.doNotContact.length ? { do_not_contact: l.doNotContact } : {}),
   follow_up: l.followUp,
   last_contacted: l.lastContactAt ? `${wallClock(l.lastContactAt, tz()).date} ${wallClock(l.lastContactAt, tz()).time}` : null,
@@ -85,6 +87,7 @@ const full = (l) => ({
     channel: d.channel,
     outcome: d.outcome,
     label: d.label || entryLabel(d.outcome, d.channel),
+    ...(d.reason ? { reason: d.reason } : {}),
     ...(d.subject ? { subject: d.subject } : {}),
     note: d.note,
     ...(d.extId ? { external_id: d.extId } : {}),
@@ -197,6 +200,11 @@ const contactProps = {
     description:
       'no_answer (or no reply), booked, not_interested, callback (follow up), wrong_no (or bounced), inbound (the lead contacted the user, e.g. an email reply), note (the user just sent something)'
   },
+  reason: {
+    type: 'string',
+    description:
+      'Optional second disposition, short: e.g. not_interested + "Too expensive" / "Not looking to grow" / "Closed down business"; no_answer + "Voicemail"; wrong_no + "Disconnected". Reuse the wording already used on the offer where it fits (see crm_overview reasons).'
+  },
   subject: { type: 'string', description: 'Email subject line' },
   body: { type: 'string', description: 'The note, or the full email / text body. Keep line breaks. Up to 20,000 characters.' },
   note: { type: 'string', description: 'Same as body' },
@@ -224,6 +232,7 @@ function logOne(offerId, a) {
     time: a.time || (a.date && a.date !== now.date ? '12:00' : now.time),
     channel: a.channel || 'call',
     outcome: a.outcome === 'note' ? '' : a.outcome,
+    reason: a.reason || '',
     subject: a.subject || '',
     note: a.body ?? a.note ?? '',
     extId: a.external_id || null,
@@ -255,9 +264,11 @@ export const TOOLS = [
             price: o.price,
             roles: o.roles,
             leads: leads.length,
-            pipeline: leads.length ? Object.fromEntries(FILTERS.filter((f) => f.key !== 'all').map((f) => [f.label, leads.filter((l) => f.test(l, t)).length])) : null
+            pipeline: leads.length ? Object.fromEntries(FILTERS.filter((f) => f.key !== 'all').map((f) => [f.label, leads.filter((l) => f.test(l, t)).length])) : null,
+            reasons_in_use: o.roles.includes('sdr') ? reasonsUsed(o.id) : undefined
           };
         }),
+        suggested_reasons: REASONS,
         rules: [
           'Check consent before contacting anyone: check_consent, or search_leads with contactable_by. Never message a lead on a channel they opted out of.',
           'If a lead asks to stop (STOP, unsubscribe, "don\'t call me"), record it straight away with set_consent and tell the user.',

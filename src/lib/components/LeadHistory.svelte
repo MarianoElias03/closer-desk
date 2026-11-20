@@ -2,10 +2,11 @@
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel } from '$lib/leads.js';
+  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  let { lead, tz, today } = $props();
+  let { lead, tz, today, reasons = {} } = $props();
+  const listId = `reasons-${Math.random().toString(36).slice(2, 8)}`;
 
   // newest first; sheet history with no date goes last
   let show = $state('');
@@ -30,7 +31,7 @@
 
   function blankDraft(channel = 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', subject: '', note: '', counted: false };
+    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -67,7 +68,7 @@
   function startEdit(d) {
     editing = d.id;
     const w = d.date ? wallClock(d.at, tz) : { date: today, time: '' };
-    form = { ...w, channel: d.channel, outcome: d.outcome || '', subject: d.subject, note: d.note, counted: d.counted };
+    form = { ...w, channel: d.channel, outcome: d.outcome || '', reason: d.reason, subject: d.subject, note: d.note, counted: d.counted };
   }
   async function save(e, d) {
     e.preventDefault();
@@ -111,6 +112,12 @@
       <option value="">{f.channel === 'call' ? 'Other (note only)' : f.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</option>
     </select>
   </label>
+  {#if f.outcome}
+    <label class="field wide">Reason (optional)
+      <input bind:value={f.reason} list="{listId}-{f.outcome}" placeholder={reasonOptions(f.outcome, reasons).slice(0, 3).join(', ') || 'More detail'} maxlength="80" />
+      <datalist id="{listId}-{f.outcome}">{#each reasonOptions(f.outcome, reasons) as r}<option value={r}></option>{/each}</datalist>
+    </label>
+  {/if}
   {#if f.channel === 'email'}
     <label class="field wide">Subject<input bind:value={f.subject} placeholder="Subject line" /></label>
   {/if}
@@ -176,7 +183,7 @@
             <div class="what">
               <span class="when"><Icon name={channelOf(d.channel).icon} size={12} />{channelOf(d.channel).label}, {d.date ? whenLabel(d.at, tz) : 'date not recorded'}</span>
               <span>
-                <strong class:optout={d.label === 'Opted out'}>{d.label && d.date ? d.label : entryLabel(d.outcome, d.channel)}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}
+                <strong class:optout={d.label === 'Opted out'}>{d.label && d.date ? d.label : entryLabel(d.outcome, d.channel)}</strong>{#if d.reason}<span class="rsn">{d.reason}</span>{/if}{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}
               </span>
               {#if d.subject}<span class="subj">{d.subject}</span>{/if}
               {#if d.note}
@@ -295,6 +302,18 @@
     max-height: 60vh;
     field-sizing: content;
     line-height: 1.45;
+  }
+  .rsn {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 9px;
+    border-radius: 999px;
+    background: var(--tone-soft, var(--iron-soft));
+    border: 1px solid color-mix(in srgb, var(--tone, var(--line)) 40%, transparent);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+    vertical-align: 1px;
   }
   .optout {
     color: var(--red);

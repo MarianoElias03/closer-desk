@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf, consentLabel } from '$lib/leads.js';
+  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf, consentLabel, withReason } from '$lib/leads.js';
   import { ddmm } from '$lib/fmt.js';
 
   /** The top of a lead: score, name, status, call button, pitch angle and research, past calls. */
@@ -30,7 +30,7 @@
         {#if isDue(lead, today)}
           <span class="chip t-yellow"><Icon name="clock" size={13} />{lead.stage === 'callback' ? 'Callback' : 'Follow-up'} {lead.followUp === today ? 'due today' : `due ${ddmm(lead.followUp)}`}</span>
         {:else}
-          <span class="chip t-{stageOf(lead).tone}"><span class="dot"></span>{stageOf(lead).label}</span>
+          <span class="chip t-{stageOf(lead).tone}"><span class="dot"></span>{withReason(stageOf(lead).label, lead.reason)}</span>
         {/if}
         {#if lead.lastContactAt}
           <span class="faint small">Last contacted {sinceLabel(lead.lastContactAt, today, tz)}, {whenLabel(lead.lastContactAt, tz)}</span>
@@ -85,7 +85,7 @@
     <ol class="hist" aria-label="Past dials">
       {#each lead.dials as d}
         <li class="t-{entryType(d.outcome)?.tone || 'none'}">
-          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${d.label || entryLabel(d.outcome, d.channel)}` : d.label}{d.subject ? `, "${d.subject}"` : d.note ? `, "${d.note.length > 70 ? d.note.slice(0, 70).trim() + '...' : d.note}"` : ''}
+          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${withReason(d.label || entryLabel(d.outcome, d.channel), d.reason)}` : withReason(d.label, d.reason)}{d.subject ? `, "${d.subject}"` : d.note ? `, "${d.note.length > 70 ? d.note.slice(0, 70).trim() + '...' : d.note}"` : ''}
         </li>
       {/each}
     </ol>

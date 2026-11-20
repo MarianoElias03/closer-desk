@@ -605,6 +605,8 @@ if (!hasColumn('lead_dials', 'subject')) db.exec("ALTER TABLE lead_dials ADD COL
 if (!hasColumn('lead_dials', 'ext_id')) db.exec('ALTER TABLE lead_dials ADD COLUMN ext_id TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS lead_dials_ext ON lead_dials(lead_id, ext_id) WHERE ext_id IS NOT NULL');
 // contact consent: the channels a lead has asked not to be contacted on (call, sms, email)
+// a second, more specific disposition: "Not interested" + "Too expensive", "Wrong number" + "Disconnected"
+if (!hasColumn('lead_dials', 'reason')) db.exec("ALTER TABLE lead_dials ADD COLUMN reason TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('leads', 'dnc')) db.exec("ALTER TABLE leads ADD COLUMN dnc TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('leads', 'dnc_note')) db.exec("ALTER TABLE leads ADD COLUMN dnc_note TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('leads', 'dnc_at')) db.exec('ALTER TABLE leads ADD COLUMN dnc_at TEXT');
@@ -681,6 +683,8 @@ function shapeColdLead(r, dials) {
     extra: JSON.parse(r.extra || '[]'),
     call,
     stage,
+    // the reason given with the outcome that set the status
+    reason: call && !call.cancelled && call.outcome && call.outcome !== 'pending' ? '' : last?.reason || '',
     doNotContact: parseDnc(r.dnc),
     dncNote: r.dnc_note || '',
     dncAt: r.dnc_at || null,
@@ -692,7 +696,7 @@ function shapeColdLead(r, dials) {
   };
 }
 
-const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, channel: d.channel || 'call', subject: d.subject || '', label: d.label, note: d.note, counted: !!d.counted, at: d.at, extId: d.ext_id || null });
+const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, reason: d.reason || '', channel: d.channel || 'call', subject: d.subject || '', label: d.label, note: d.note, counted: !!d.counted, at: d.at, extId: d.ext_id || null });
 
 export function getColdLead(offerId, id) {
   const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
@@ -769,16 +773,17 @@ export function deleteColdLead(offerId, id) {
 }
 
 /** Log one dial on a lead. It counts on `date` in the SDR tallies. */
-export function logDial(offerId, leadId, { outcome, date, followUp, note }) {
+export function logDial(offerId, leadId, { outcome, date, followUp, note, reason }) {
   if (!SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
   return db.transaction(() => {
     const l = db.prepare('SELECT id, follow_up FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, 1, ?, ?)').run(
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?)').run(
       l.id,
       offerId,
       date,
       outcome,
+      cleanReason(reason),
       String(note || '').slice(0, 1000),
       l.follow_up,
       // stamped now, unless it's being logged for another day
@@ -970,6 +975,7 @@ function entryFields(e) {
     channel,
     counted,
     subject: String(e.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
+    reason: outcome ? cleanReason(e.reason) : '',
     // long enough for a whole email body
     note: String(e.note ?? '').replace(/\r\n/g, '\n').slice(0, 20000),
     extId: e.extId ? String(e.extId).trim().slice(0, 200) : null
@@ -985,8 +991,8 @@ export function addLeadEntry(offerId, leadId, e) {
       const seen = db.prepare('SELECT id FROM lead_dials WHERE lead_id = ? AND ext_id = ?').get(l.id, f.extId);
       if (seen) return { ...getColdLead(offerId, l.id), duplicateOf: seen.id };
     }
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
-      l.id, offerId, f.date, f.outcome, f.channel, f.subject, f.note, f.extId, f.counted ? 1 : 0, f.at
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      l.id, offerId, f.date, f.outcome, f.reason, f.channel, f.subject, f.note, f.extId, f.counted ? 1 : 0, f.at
     );
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
     db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
@@ -999,11 +1005,11 @@ export function updateLeadEntry(offerId, leadId, dialId, e) {
     const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
     if (!d) return null;
     const was = d.date ? wallClock(d.at, getSettings().timezone) : {};
-    const f = entryFields({ ...was, outcome: d.outcome, channel: d.channel, subject: d.subject, note: d.note, extId: d.ext_id, counted: !!d.counted, ...e });
+    const f = entryFields({ ...was, outcome: d.outcome, reason: d.reason, channel: d.channel, subject: d.subject, note: d.note, extId: d.ext_id, counted: !!d.counted, ...e });
     if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
-    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, channel = ?, subject = ?, note = ?, counted = ? WHERE id = ?').run(
-      f.date, f.at, f.outcome, f.channel, f.subject, f.note, f.counted ? 1 : 0, d.id
+    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, reason = ?, channel = ?, subject = ?, note = ?, counted = ? WHERE id = ?').run(
+      f.date, f.at, f.outcome, f.reason, f.channel, f.subject, f.note, f.counted ? 1 : 0, d.id
     );
     return getColdLead(offerId, leadId);
   })();
@@ -1052,4 +1058,21 @@ export function setConsent(offerId, leadId, { block = [], allow = [], note = '' 
     for (const c of removed) log.run(r.id, offerId, day, c, 'Opted back in', `OK to contact by ${CHANNEL_WORD[c]} again${why ? `: ${why}` : ''}`, now);
     return getColdLead(offerId, r.id);
   })();
+}
+
+// ---------- second disposition (reason) ----------
+
+function cleanReason(r) {
+  const t = String(r ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return t ? t[0].toUpperCase() + t.slice(1) : '';
+}
+
+/** Reasons already used on this offer, per outcome, most used first: they join the suggestions. */
+export function reasonsUsed(offerId) {
+  const out = {};
+  for (const r of db
+    .prepare("SELECT outcome, reason, COUNT(*) n FROM lead_dials WHERE offer_id = ? AND reason != '' AND outcome IS NOT NULL GROUP BY outcome, reason ORDER BY n DESC")
+    .all(offerId))
+    (out[r.outcome] ??= []).push(r.reason);
+  return out;
 }

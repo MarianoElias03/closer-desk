@@ -4,6 +4,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import LeadSummary from '$lib/components/LeadSummary.svelte';
   import LeadPad from '$lib/components/LeadPad.svelte';
+  import ReasonBar from '$lib/components/ReasonBar.svelte';
   import LeadHistory from '$lib/components/LeadHistory.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
   import { FILTERS, leadName, linkFor, viewQuery, consentLabel } from '$lib/leads.js';
@@ -144,6 +145,7 @@
 
   // ---- previous / next ----
   let dir = $state(1);
+  let lastReason = $state(null);
   function step(to, d) {
     if (!to) return;
     dir = d;
@@ -194,13 +196,14 @@
         <LeadSummary {lead} today={data.today} {tz} title="h1" chips={false} />
         <div class="log">
           <span class="k">Log this call</span>
-          <LeadPad {lead} today={data.today} />
+          <LeadPad {lead} today={data.today} onlogged={(e) => (lastReason = { leadId: e.lead.id, dialId: e.dialId, outcome: e.outcome, name: e.name })} />
+          <ReasonBar bind:last={lastReason} reasons={data.reasons} />
           <p class="faint small">Keys 1 to 5 log an outcome, the arrow keys go to the previous or next lead.</p>
         </div>
       </section>
 
       <section class="panel">
-        <LeadHistory {lead} {tz} today={data.today} />
+        <LeadHistory {lead} {tz} today={data.today} reasons={data.reasons} />
       </section>
     </div>
 

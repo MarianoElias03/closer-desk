@@ -27,6 +27,32 @@
 
   const active = (href) => (href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href));
 
+  // Each tab remembers where you were in it (e.g. the lead you had open, with its list filters),
+  // so leaving for Today and coming back lands you there again. Clicking the tab you're already
+  // in goes to its start. Kept per offer, for this browser tab only.
+  let lastIn = $state({});
+  const navKey = (href) => `closer.nav.${data?.offer?.id}.${href}`;
+  $effect(() => {
+    const here = page.url.pathname + page.url.search;
+    const n = NAV.find((x) => x.href !== '/' && active(x.href));
+    if (!n || page.status >= 400) return;
+    // write without reading lastIn, so this effect doesn't re-run itself
+    lastIn[navKey(n.href)] = here;
+    try {
+      sessionStorage.setItem(navKey(n.href), here);
+    } catch {}
+  });
+  function hrefFor(n) {
+    if (n.href === '/' || active(n.href)) return n.href;
+    let saved = lastIn[navKey(n.href)];
+    if (!saved) {
+      try {
+        saved = sessionStorage.getItem(navKey(n.href));
+      } catch {}
+    }
+    return saved && saved.startsWith(n.href) ? saved : n.href;
+  }
+
   // Another tab switched offer: reload this one so it never writes into the wrong offer.
   function checkOffer() {
     if (document.visibilityState === 'hidden') return;
@@ -61,7 +87,7 @@
     <div class="offer"><OfferSwitcher offer={data.offer} offers={data.offers} /></div>
     <nav>
       {#each nav as n}
-        <a href={n.href} class:active={active(n.href)} aria-current={active(n.href) ? 'page' : undefined}>
+        <a href={hrefFor(n)} class:active={active(n.href)} aria-current={active(n.href) ? 'page' : undefined}>
           <Icon name={n.icon} size={19} />
           <span>{n.label}</span>
         </a>

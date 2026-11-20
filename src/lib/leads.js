@@ -5,6 +5,33 @@ import { SDR_OUTCOMES } from './stats.js';
 export const ENTRY_TYPES = [...SDR_OUTCOMES, { key: 'inbound', label: 'Inbound call', short: 'Inbound', tone: 'green' }];
 export const entryType = (k) => ENTRY_TYPES.find((o) => o.key === k);
 
+/** Suggested second dispositions for each outcome. Anything you type yourself joins these. */
+export const REASONS = {
+  no_answer: ['Voicemail', 'Rang out', 'Line busy', 'Switched off', 'Left a message', 'Receptionist, owner out'],
+  not_interested: [
+    'Not looking to grow',
+    'Too expensive',
+    'Too hard / no time',
+    'Already has someone',
+    'Happy as is',
+    'Closed down business',
+    'Bad timing',
+    'Not the decision maker',
+    'Hung up'
+  ],
+  wrong_no: ['Disconnected', 'Wrong person', 'Business closed', 'Number not in service', 'Landline / fax'],
+  callback: ['Busy right now', 'Call back later today', 'Wants info first', 'Talk to partner', 'Owner away'],
+  booked: ['Discovery call', 'Wants a quote', 'Wants a demo'],
+  inbound: ['Returned my call', 'Asked for info', 'Ready to book', 'Asked to stop']
+};
+export function reasonOptions(outcome, used = {}) {
+  const base = REASONS[outcome] || [];
+  const extra = (used[outcome] || []).filter((r) => !base.some((b) => b.toLowerCase() === r.toLowerCase()));
+  return [...base, ...extra];
+}
+/** "No answer" + "Voicemail" -> "No answer, voicemail" */
+export const withReason = (label, reason) => (reason ? `${label}, ${reason[0].toLowerCase()}${reason.slice(1)}` : label);
+
 /** How a contact happened. Only calls you make can count on Dialling. */
 export const CHANNELS = [
   { key: 'call', label: 'Call', plural: 'Calls', icon: 'phone' },
@@ -343,6 +370,7 @@ export const COLUMNS = [
   { key: 'contact', label: 'Contact', get: (l) => l.contact.toLowerCase() || null, on: true },
   { key: 'phone', label: 'Mobile', get: (l) => l.phone || null, on: true },
   { key: 'status', label: 'Status', get: (l) => STAGE_ORDER.indexOf(l.stage), on: true },
+  { key: 'reason', label: 'Reason', get: (l) => l.reason?.toLowerCase() || null, on: true },
   { key: 'last', label: 'Last contact', dir: 'desc', get: (l) => l.lastContactAt, on: true },
   { key: 'follow', label: 'Follow-up', get: (l) => l.followUp, on: true },
   { key: 'suburb', label: 'Suburb', get: (l) => l.suburb.toLowerCase() || null, on: true },

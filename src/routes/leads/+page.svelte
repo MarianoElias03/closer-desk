@@ -43,7 +43,7 @@
   </section>
 {/if}
 
-<LeadDialer leads={data.leads} today={data.today} tz={data.tz} bind:currentId={dialId} />
+<LeadDialer leads={data.leads} today={data.today} tz={data.tz} reasons={data.reasons} bind:currentId={dialId} />
 <ColdLeads leads={data.leads} today={data.today} tz={data.tz} />
 
 {#if importing}

@@ -4,15 +4,17 @@
   import Icon from './Icon.svelte';
   import LeadSummary from './LeadSummary.svelte';
   import LeadPad from './LeadPad.svelte';
+  import ReasonBar from './ReasonBar.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
   import { dialQueue, isDue, leadName } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  let { leads, today, tz, currentId = $bindable(null) } = $props();
+  let { leads, today, tz, reasons = {}, currentId = $bindable(null) } = $props();
 
   let skipped = $state([]);
   let last = $state(null);
   let busy = $state(false);
+  let lastReason = $state(null);
 
   const queue = $derived(dialQueue(leads, today).filter((l) => !skipped.includes(l.id)));
   const allQueued = $derived(dialQueue(leads, today));
@@ -21,6 +23,7 @@
 
   function logged(e) {
     last = { leadId: e.lead.id, dialId: e.dialId, outcome: e.outcome, name: e.name };
+    lastReason = { ...last };
     currentId = null;
     skipped = skipped.filter((id) => id !== e.lead.id);
   }
@@ -33,6 +36,7 @@
       const r = await fetch(`/api/leads/${u.leadId}/dials/${u.dialId}`, { method: 'DELETE' });
       if (!r.ok) throw new Error();
       last = null;
+      lastReason = null;
       currentId = u.leadId;
       toast(`Took back the ${SDR_OUTCOMES.find((o) => o.key === u.outcome).label.toLowerCase()} on ${u.name}`);
       await invalidateAll();
@@ -94,7 +98,11 @@
         </div>
       </article>
     {/key}
-  {:else}
+  {/if}
+
+  <ReasonBar bind:last={lastReason} {reasons} />
+
+  {#if !current}
     <div class="empty">
       {#if !leads.length}
         <strong>No leads yet.</strong> Import your spreadsheet to start dialling from it.
