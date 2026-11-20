@@ -3,42 +3,55 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { leadName } from '$lib/leads.js';
+  import { leadName, reasonOptions } from '$lib/leads.js';
   import { dayLabel } from '$lib/fmt.js';
   import { addDays } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  /** Note box, the five outcome pads (keys 1 to 5) and the callback date picker for one lead. */
-  let { lead, today, onlogged, busy = $bindable(false) } = $props();
+  /**
+   * Note box, the five outcome pads (keys 1 to 5), then the reason (second disposition) for the
+   * outcome you picked. Nothing is logged until you pick a reason, type your own, or choose
+   * "No reason". A callback also takes its date here.
+   */
+  let { lead, today, onlogged, reasons = {}, busy = $bindable(false) } = $props();
 
   let note = $state('');
-  let cbOpen = $state(false);
+  let pending = $state(null); // outcome key waiting for its reason
   let cbDate = $state('');
+  let other = $state('');
 
   let lastId = null;
   $effect(() => {
     if (lead.id !== lastId) {
       lastId = lead.id;
       note = '';
-      cbOpen = false;
+      pending = null;
+      other = '';
     }
   });
 
-  async function log(outcome, followUp = null) {
+  const options = $derived(pending ? reasonOptions(pending, reasons).slice(0, 9) : []);
+  const pendingLabel = $derived(SDR_OUTCOMES.find((o) => o.key === pending)?.label || '');
+
+  async function log(outcome, reason = '') {
     if (busy) return;
+    const followUp = outcome === 'callback' ? cbDate || addDays(today, 1) : null;
     busy = true;
     try {
       const r = await fetch(`/api/leads/${lead.id}/dials`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ outcome, followUp, note: note.trim() })
+        body: JSON.stringify({ outcome, followUp, reason, note: note.trim() })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save that dial');
       const label = SDR_OUTCOMES.find((o) => o.key === outcome).label.toLowerCase();
-      toast(`${leadName(lead)}: ${label}${followUp ? `, call back ${dayLabel(followUp, { weekday: 'short', day: 'numeric', month: 'short' })}` : ''}`);
+      toast(
+        `${leadName(lead)}: ${label}${reason ? `, ${reason.toLowerCase()}` : ''}${followUp ? `, call back ${dayLabel(followUp, { weekday: 'short', day: 'numeric', month: 'short' })}` : ''}`
+      );
       note = '';
-      cbOpen = false;
+      pending = null;
+      other = '';
       const dialId = Math.max(...j.lead.dials.map((d) => d.id));
       await onlogged?.({ lead: j.lead, dialId, outcome, name: leadName(lead) });
       await invalidateAll();
@@ -50,15 +63,30 @@
   }
 
   function press(o) {
-    if (o.key === 'callback') {
-      cbOpen = !cbOpen;
-      cbDate = lead.followUp && lead.followUp > today ? lead.followUp : addDays(today, 1);
-    } else log(o.key);
+    if (pending === o.key) return (pending = null);
+    pending = o.key;
+    other = '';
+    if (o.key === 'callback') cbDate = lead.followUp && lead.followUp > today ? lead.followUp : addDays(today, 1);
   }
 
+  // keys: 1-5 pick an outcome; once picked, 1-9 pick its reason, Enter logs with no reason, Esc backs out
   function onkey(e) {
     if (e.target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (document.querySelector('[role="dialog"]')) return;
+    if (pending) {
+      const i = Number(e.key) - 1;
+      if (i >= 0 && i < options.length) {
+        e.preventDefault();
+        log(pending, options[i]);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        log(pending);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        pending = null;
+      }
+      return;
+    }
     const i = Number(e.key) - 1;
     if (i >= 0 && i < SDR_OUTCOMES.length) {
       e.preventDefault();
@@ -85,20 +113,42 @@
 
   <div class="pads">
     {#each SDR_OUTCOMES as o, i}
-      <button class="pad t-{o.tone}" class:on={o.key === 'callback' && cbOpen} onclick={() => press(o)} disabled={busy}>
+      <button class="pad t-{o.tone}" class:on={pending === o.key} class:dim={pending && pending !== o.key} onclick={() => press(o)} disabled={busy} aria-pressed={pending === o.key}>
         <span class="key">{i + 1}</span>{o.label}
       </button>
     {/each}
   </div>
 
-  {#if cbOpen}
-    <div class="cb" transition:slide={{ duration: 180 }}>
-      <span class="k">Call back on</span>
-      {#each quick as [label, n]}
-        <button class="btn small" class:primary={cbDate === addDays(today, n)} onclick={() => (cbDate = addDays(today, n))}>{label}</button>
-      {/each}
-      <input type="date" bind:value={cbDate} min={today} aria-label="Callback date" />
-      <button class="btn small primary" onclick={() => log('callback', cbDate || addDays(today, 1))} disabled={busy}><Icon name="check" size={14} />Save callback</button>
+  {#if pending}
+    {@const tone = SDR_OUTCOMES.find((o) => o.key === pending)?.tone ?? 'none'}
+    <div class="why t-{tone}" transition:slide={{ duration: 180 }}>
+      {#if pending === 'callback'}
+        <div class="cb">
+          <span class="k">Call back on</span>
+          {#each quick as [label, n]}
+            <button class="btn small" class:primary={cbDate === addDays(today, n)} onclick={() => (cbDate = addDays(today, n))}>{label}</button>
+          {/each}
+          <input type="date" bind:value={cbDate} min={today} aria-label="Callback date" />
+        </div>
+      {/if}
+      <div class="wtop">
+        <span class="k">{pendingLabel}: why?</span>
+        <span class="faint hint">Keys 1 to {options.length} pick, Enter for no reason, Esc to go back</span>
+      </div>
+      <div class="chips">
+        {#each options as r, i}
+          <button class="rc" onclick={() => log(pending, r)} disabled={busy}><span class="n">{i + 1}</span>{r}</button>
+        {/each}
+      </div>
+      <div class="foot">
+        <form class="own" onsubmit={(e) => (e.preventDefault(), other.trim() && log(pending, other.trim()))}>
+          <input bind:value={other} placeholder="Other reason" aria-label="Other reason" maxlength="80" />
+          <button class="btn small" disabled={busy || !other.trim()}><Icon name="check" size={13} />Log with this</button>
+        </form>
+        <span class="spacer"></span>
+        <button class="btn small ghost" onclick={() => (pending = null)} disabled={busy}>Cancel</button>
+        <button class="btn small primary" onclick={() => log(pending)} disabled={busy}><Icon name="check" size={13} />{pending === 'callback' ? 'Save callback, no reason' : 'Log, no reason'}</button>
+      </div>
     </div>
   {/if}
 </div>
@@ -143,6 +193,9 @@
   .pad:active {
     transform: translateY(1px) scale(0.98);
   }
+  .pad.dim {
+    opacity: 0.45;
+  }
   .pad.on {
     box-shadow: inset 0 0 0 2px var(--tone), inset 0 -4px 0 var(--tone);
   }
@@ -153,14 +206,88 @@
     font-size: 11px;
     color: var(--ink-3);
   }
+  .why {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--tone-soft);
+    border: 1px solid color-mix(in srgb, var(--tone) 40%, transparent);
+  }
+  .wtop {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+  }
+  .hint {
+    font-size: 12px;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .rc {
+    height: 34px;
+    padding: 0 12px 0 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ink);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    transition: border-color 0.12s, transform 0.12s var(--ease-spring);
+  }
+  .rc:hover {
+    border-color: var(--tone);
+  }
+  .rc:active {
+    transform: scale(0.96);
+  }
+  .rc .n {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-size: 11px;
+    background: var(--tone-soft);
+    color: var(--ink-2);
+  }
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+  .spacer {
+    flex: 1;
+  }
+  .own {
+    display: flex;
+    gap: 6px;
+  }
+  .own input {
+    height: 32px;
+    width: 180px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--ink);
+    padding: 0 10px;
+    font-size: 13px;
+  }
   .cb {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
     align-items: center;
-    padding: 12px 14px;
-    border-radius: 12px;
-    background: var(--yellow-soft);
+    padding-bottom: 10px;
+    border-bottom: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
   }
   .k {
     font-size: 11.5px;

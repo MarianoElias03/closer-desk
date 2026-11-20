@@ -4,7 +4,6 @@
   import Icon from './Icon.svelte';
   import LeadSummary from './LeadSummary.svelte';
   import LeadPad from './LeadPad.svelte';
-  import ReasonBar from './ReasonBar.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
   import { dialQueue, isDue, leadName } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
@@ -14,7 +13,6 @@
   let skipped = $state([]);
   let last = $state(null);
   let busy = $state(false);
-  let lastReason = $state(null);
 
   const queue = $derived(dialQueue(leads, today).filter((l) => !skipped.includes(l.id)));
   const allQueued = $derived(dialQueue(leads, today));
@@ -23,7 +21,6 @@
 
   function logged(e) {
     last = { leadId: e.lead.id, dialId: e.dialId, outcome: e.outcome, name: e.name };
-    lastReason = { ...last };
     currentId = null;
     skipped = skipped.filter((id) => id !== e.lead.id);
   }
@@ -36,7 +33,6 @@
       const r = await fetch(`/api/leads/${u.leadId}/dials/${u.dialId}`, { method: 'DELETE' });
       if (!r.ok) throw new Error();
       last = null;
-      lastReason = null;
       currentId = u.leadId;
       toast(`Took back the ${SDR_OUTCOMES.find((o) => o.key === u.outcome).label.toLowerCase()} on ${u.name}`);
       await invalidateAll();
@@ -74,7 +70,7 @@
       <h2>Dial your list</h2>
       <p class="muted small">
         {#if allQueued.length}
-          {allQueued.length} to ring today{due ? `, ${due} ${due === 1 ? 'callback' : 'callbacks'} due first` : ''}. Keys 1 to 5 log the outcome, S skips, Z undoes.
+          {allQueued.length} to ring today{due ? `, ${due} ${due === 1 ? 'callback' : 'callbacks'} due first` : ''}. Keys 1 to 5 pick the outcome, then a number picks the reason (Enter for none). S skips, Z undoes.
         {:else}
           Nobody left to ring today.
         {/if}
@@ -90,7 +86,7 @@
     {#key current.id}
       <article class="lead" in:fly={{ x: 40, duration: 320 }}>
         <LeadSummary lead={current} {today} {tz} />
-        <LeadPad lead={current} {today} onlogged={logged} bind:busy />
+        <LeadPad lead={current} {today} {reasons} onlogged={logged} bind:busy />
         <div class="foot">
           <button class="btn small ghost" onclick={skip}><Icon name="skip" size={14} />Skip for now</button>
           <a class="btn small ghost" href="/leads/{current.id}">Open lead page</a>
@@ -99,8 +95,6 @@
       </article>
     {/key}
   {/if}
-
-  <ReasonBar bind:last={lastReason} {reasons} />
 
   {#if !current}
     <div class="empty">
