@@ -10,8 +10,8 @@
 
   /**
    * Note box, the five outcome pads (keys 1 to 5), then the reason (second disposition) for the
-   * outcome you picked. Nothing is logged until you pick a reason, type your own, or choose
-   * "No reason". A callback also takes its date here.
+   * outcome you picked. A reason is required: nothing is logged until you pick one or type your
+   * own. A callback also takes its date here.
    */
   let { lead, today, onlogged, reasons = {}, busy = $bindable(false) } = $props();
 
@@ -33,8 +33,8 @@
   const options = $derived(pending ? reasonOptions(pending, reasons).slice(0, 9) : []);
   const pendingLabel = $derived(SDR_OUTCOMES.find((o) => o.key === pending)?.label || '');
 
-  async function log(outcome, reason = '') {
-    if (busy) return;
+  async function log(outcome, reason) {
+    if (busy || !String(reason || '').trim()) return;
     const followUp = outcome === 'callback' ? cbDate || addDays(today, 1) : null;
     busy = true;
     try {
@@ -69,7 +69,7 @@
     if (o.key === 'callback') cbDate = lead.followUp && lead.followUp > today ? lead.followUp : addDays(today, 1);
   }
 
-  // keys: 1-5 pick an outcome; once picked, 1-9 pick its reason, Enter logs with no reason, Esc backs out
+  // keys: 1-5 pick an outcome; once picked, 1-9 pick its reason, Esc backs out
   function onkey(e) {
     if (e.target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey) return;
     if (document.querySelector('[role="dialog"]')) return;
@@ -78,9 +78,6 @@
       if (i >= 0 && i < options.length) {
         e.preventDefault();
         log(pending, options[i]);
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        log(pending);
       } else if (e.key === 'Escape') {
         e.preventDefault();
         pending = null;
@@ -133,7 +130,7 @@
       {/if}
       <div class="wtop">
         <span class="k">{pendingLabel}: why?</span>
-        <span class="faint hint">Keys 1 to {options.length} pick, Enter for no reason, Esc to go back</span>
+        <span class="faint hint">Pick a reason to log it. Keys 1 to {options.length}, Esc to go back</span>
       </div>
       <div class="chips">
         {#each options as r, i}
@@ -143,11 +140,10 @@
       <div class="foot">
         <form class="own" onsubmit={(e) => (e.preventDefault(), other.trim() && log(pending, other.trim()))}>
           <input bind:value={other} placeholder="Other reason" aria-label="Other reason" maxlength="80" />
-          <button class="btn small" disabled={busy || !other.trim()}><Icon name="check" size={13} />Log with this</button>
+          <button class="btn small primary" disabled={busy || !other.trim()}><Icon name="check" size={13} />Log with this</button>
         </form>
         <span class="spacer"></span>
         <button class="btn small ghost" onclick={() => (pending = null)} disabled={busy}>Cancel</button>
-        <button class="btn small primary" onclick={() => log(pending)} disabled={busy}><Icon name="check" size={13} />{pending === 'callback' ? 'Save callback, no reason' : 'Log, no reason'}</button>
       </div>
     </div>
   {/if}

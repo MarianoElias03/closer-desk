@@ -2,9 +2,11 @@ import { json, error } from '@sveltejs/kit';
 import { addLeadEntry } from '$lib/server/db.js';
 // Add a contact that happened outside the dialler, with its own date and time.
 export async function POST({ params, request, locals }) {
+  const b = await request.json();
+  if (b.outcome && !String(b.reason || '').trim()) error(400, 'Add a reason for this outcome');
   let lead;
   try {
-    lead = addLeadEntry(locals.offer.id, params.id, await request.json());
+    lead = addLeadEntry(locals.offer.id, params.id, b);
   } catch (e) {
     error(400, e.message);
   }

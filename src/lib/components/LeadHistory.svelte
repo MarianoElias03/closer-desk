@@ -68,7 +68,8 @@
   function startEdit(d) {
     editing = d.id;
     const w = d.date ? wallClock(d.at, tz) : { date: today, time: '' };
-    form = { ...w, channel: d.channel, outcome: d.outcome || '', reason: d.reason, subject: d.subject, note: d.note, counted: d.counted };
+    // old entries saved without a reason can still be edited; changing the outcome needs one
+    form = { ...w, was: d.reason ? null : d.outcome || '', channel: d.channel, outcome: d.outcome || '', reason: d.reason, subject: d.subject, note: d.note, counted: d.counted };
   }
   async function save(e, d) {
     e.preventDefault();
@@ -113,8 +114,8 @@
     </select>
   </label>
   {#if f.outcome}
-    <label class="field wide">Reason (optional)
-      <input bind:value={f.reason} list="{listId}-{f.outcome}" placeholder={reasonOptions(f.outcome, reasons).slice(0, 3).join(', ') || 'More detail'} maxlength="80" />
+    <label class="field wide">Reason
+      <input required={f.outcome !== (f.was ?? null)} bind:value={f.reason} list="{listId}-{f.outcome}" placeholder={reasonOptions(f.outcome, reasons).slice(0, 3).join(', ') || 'More detail'} maxlength="80" />
       <datalist id="{listId}-{f.outcome}">{#each reasonOptions(f.outcome, reasons) as r}<option value={r}></option>{/each}</datalist>
     </label>
   {/if}

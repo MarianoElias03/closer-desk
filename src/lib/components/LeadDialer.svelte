@@ -70,7 +70,7 @@
       <h2>Dial your list</h2>
       <p class="muted small">
         {#if allQueued.length}
-          {allQueued.length} to ring today{due ? `, ${due} ${due === 1 ? 'callback' : 'callbacks'} due first` : ''}. Keys 1 to 5 pick the outcome, then a number picks the reason (Enter for none). S skips, Z undoes.
+          {allQueued.length} to ring today{due ? `, ${due} ${due === 1 ? 'callback' : 'callbacks'} due first` : ''}. Keys 1 to 5 pick the outcome, then a number picks the reason. S skips, Z undoes.
         {:else}
           Nobody left to ring today.
         {/if}

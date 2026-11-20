@@ -4,9 +4,10 @@ export function DELETE({ params, locals }) {
   return json({ lead: removeDial(locals.offer.id, params.id, params.dialId) });
 }
 export async function PATCH({ params, request, locals }) {
+  const b = await request.json();
   let lead;
   try {
-    lead = updateLeadEntry(locals.offer.id, params.id, params.dialId, await request.json());
+    lead = updateLeadEntry(locals.offer.id, params.id, params.dialId, b);
   } catch (e) {
     error(400, e.message);
   }
