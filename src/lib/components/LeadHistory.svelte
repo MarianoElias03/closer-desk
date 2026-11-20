@@ -176,7 +176,7 @@
             <div class="what">
               <span class="when"><Icon name={channelOf(d.channel).icon} size={12} />{channelOf(d.channel).label}, {d.date ? whenLabel(d.at, tz) : 'date not recorded'}</span>
               <span>
-                <strong>{entryLabel(d.outcome, d.channel)}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}
+                <strong class:optout={d.label === 'Opted out'}>{d.label && d.date ? d.label : entryLabel(d.outcome, d.channel)}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}
               </span>
               {#if d.subject}<span class="subj">{d.subject}</span>{/if}
               {#if d.note}
@@ -295,6 +295,9 @@
     max-height: 60vh;
     field-sizing: content;
     line-height: 1.45;
+  }
+  .optout {
+    color: var(--red);
   }
   .subj {
     font-weight: 700;

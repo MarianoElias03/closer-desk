@@ -604,6 +604,10 @@ if (!hasColumn('lead_dials', 'channel')) db.exec("ALTER TABLE lead_dials ADD COL
 if (!hasColumn('lead_dials', 'subject')) db.exec("ALTER TABLE lead_dials ADD COLUMN subject TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('lead_dials', 'ext_id')) db.exec('ALTER TABLE lead_dials ADD COLUMN ext_id TEXT');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS lead_dials_ext ON lead_dials(lead_id, ext_id) WHERE ext_id IS NOT NULL');
+// contact consent: the channels a lead has asked not to be contacted on (call, sms, email)
+if (!hasColumn('leads', 'dnc')) db.exec("ALTER TABLE leads ADD COLUMN dnc TEXT NOT NULL DEFAULT ''");
+if (!hasColumn('leads', 'dnc_note')) db.exec("ALTER TABLE leads ADD COLUMN dnc_note TEXT NOT NULL DEFAULT ''");
+if (!hasColumn('leads', 'dnc_at')) db.exec('ALTER TABLE leads ADD COLUMN dnc_at TEXT');
 
 export const DIAL_OUTCOMES = SDR_FIELDS;
 
@@ -677,6 +681,9 @@ function shapeColdLead(r, dials) {
     extra: JSON.parse(r.extra || '[]'),
     call,
     stage,
+    doNotContact: parseDnc(r.dnc),
+    dncNote: r.dnc_note || '',
+    dncAt: r.dnc_at || null,
     dials,
     attempts: dials.filter((d) => d.channel === 'call' && d.outcome !== 'inbound').length,
     lastDialOn: dials.filter((d) => d.date).at(-1)?.date || null,
@@ -811,7 +818,7 @@ export function importColdLeads(offerId, rows) {
     const byPhone = new Map(existing.filter((l) => l.phone_key).map((l) => [l.phone_key, l]));
     const byEmail = new Map(existing.filter((l) => l.email).map((l) => [l.email.toLowerCase(), l]));
     const byName = new Map(existing.filter((l) => l.business).map((l) => [l.business.toLowerCase(), l]));
-    const hasHistory = db.prepare("SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 AND label != '' LIMIT 1");
+    const hasHistory = db.prepare("SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 AND label != '' AND date IS NULL LIMIT 1");
     const addHistory = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, label, counted, at) VALUES(?, ?, NULL, ?, ?, ?, 0, ?)");
     const now = new Date().toISOString();
     for (const raw of (rows || []).slice(0, 5000)) {
@@ -999,5 +1006,50 @@ export function updateLeadEntry(offerId, leadId, dialId, e) {
       f.date, f.at, f.outcome, f.channel, f.subject, f.note, f.counted ? 1 : 0, d.id
     );
     return getColdLead(offerId, leadId);
+  })();
+}
+
+// ---------- contact consent ----------
+// A lead can ask not to be called, texted or emailed (or all three). The app warns and keeps them out
+// of the call queue; the MCP refuses to log outbound contact on a channel they opted out of.
+
+const DNC_CHANNELS = ['call', 'sms', 'email'];
+function parseDnc(v) {
+  const set = String(v || '').split(',').map((x) => x.trim());
+  return DNC_CHANNELS.filter((c) => set.includes(c));
+}
+const CHANNEL_WORD = { call: 'calls', sms: 'texts', email: 'emails' };
+
+/**
+ * Opt a lead out of (block) or back into (allow) channels. Each change also goes in the lead's
+ * history as a note on that channel, so you can see when and why.
+ */
+export function setConsent(offerId, leadId, { block = [], allow = [], note = '' }) {
+  const expand = (list) => (list.includes('all') ? DNC_CHANNELS : DNC_CHANNELS.filter((c) => list.includes(c)));
+  const add = expand(block);
+  const remove = expand(allow);
+  return db.transaction(() => {
+    const r = db.prepare('SELECT * FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
+    if (!r) return null;
+    const before = parseDnc(r.dnc);
+    const after = DNC_CHANNELS.filter((c) => (before.includes(c) || add.includes(c)) && !remove.includes(c));
+    const added = after.filter((c) => !before.includes(c));
+    const removed = before.filter((c) => !after.includes(c));
+    if (!added.length && !removed.length) return getColdLead(offerId, r.id);
+    const now = new Date().toISOString();
+    const why = String(note || '').trim().slice(0, 500);
+    db.prepare('UPDATE leads SET dnc = ?, dnc_note = ?, dnc_at = ?, updated_at = ? WHERE id = ?').run(
+      after.join(','),
+      after.length ? why || (added.length ? '' : r.dnc_note) : '',
+      after.length ? (added.length ? now : r.dnc_at) : null,
+      now,
+      r.id
+    );
+    const tz = getSettings().timezone;
+    const day = dayKey(now, tz);
+    const log = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, label, note, counted, at) VALUES(?, ?, ?, NULL, ?, ?, ?, 0, ?)");
+    for (const c of added) log.run(r.id, offerId, day, c, 'Opted out', `Asked not to get ${CHANNEL_WORD[c]}${why ? `: ${why}` : ''}`, now);
+    for (const c of removed) log.run(r.id, offerId, day, c, 'Opted back in', `OK to contact by ${CHANNEL_WORD[c]} again${why ? `: ${why}` : ''}`, now);
+    return getColdLead(offerId, r.id);
   })();
 }

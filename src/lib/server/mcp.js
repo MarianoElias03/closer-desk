@@ -19,7 +19,8 @@ import {
   phoneKey,
   CHANNELS,
   ENTRY_TYPES,
-  linkLeadCalls
+  linkLeadCalls,
+  setConsent
 } from './db.js';
 import { FILTERS, listLeads, STAGES, entryLabel, wallClock } from '../leads.js';
 import { sdrSummary } from '../stats.js';
@@ -57,13 +58,24 @@ const brief = (l) => ({
   category: l.category,
   score: l.score,
   status: STAGES[l.stage]?.label || l.stage,
+  ...(l.doNotContact.length ? { do_not_contact: l.doNotContact } : {}),
   follow_up: l.followUp,
   last_contacted: l.lastContactAt ? `${wallClock(l.lastContactAt, tz()).date} ${wallClock(l.lastContactAt, tz()).time}` : null,
   call_attempts: l.attempts
 });
 
+const consentOf = (l) => ({
+  lead_id: l.id,
+  business: l.business,
+  calls_ok: !l.doNotContact.includes('call'),
+  sms_ok: !l.doNotContact.includes('sms'),
+  email_ok: !l.doNotContact.includes('email'),
+  ...(l.doNotContact.length ? { opted_out_of: l.doNotContact, since: l.dncAt, reason: l.dncNote || undefined } : {})
+});
+
 const full = (l) => ({
   ...brief(l),
+  consent: consentOf(l),
   notes: l.notes,
   research: Object.fromEntries(l.extra),
   booked_call: l.call ? { title: l.call.title, start: l.call.start, outcome: l.call.outcome, cash: l.call.cash, cancelled: l.call.cancelled } : null,
@@ -199,6 +211,13 @@ const contactProps = {
 
 function logOne(offerId, a) {
   const l = findLead(offerId, a.lead);
+  const channel = a.channel || 'call';
+  if (l.doNotContact.includes(channel) && a.outcome !== 'inbound') {
+    const word = { call: 'called', sms: 'texted', email: 'emailed' }[channel];
+    throw new Error(
+      `${l.business || 'This lead'} asked not to be ${word}${l.dncNote ? ` (${l.dncNote})` : ''}. Don't contact them this way. Only their own messages (outcome inbound) can be logged on this channel.`
+    );
+  }
   const now = wallClock(new Date().toISOString(), tz());
   const updated = addLeadEntry(offerId, l.id, {
     date: a.date || now.date,
@@ -240,6 +259,8 @@ export const TOOLS = [
           };
         }),
         rules: [
+          'Check consent before contacting anyone: check_consent, or search_leads with contactable_by. Never message a lead on a channel they opted out of.',
+          'If a lead asks to stop (STOP, unsubscribe, "don\'t call me"), record it straight away with set_consent and tell the user.',
           'Only phone calls you make count on the Dialling numbers. SMS, email and inbound contacts are recorded as contact but never counted.',
           'Changing a lead field never changes Dialling numbers.',
           'Do not count a call on Dialling unless the user says they made it and has not already tapped it in the app.'
@@ -259,6 +280,7 @@ export const TOOLS = [
         query: { type: 'string' },
         contacted_by: { type: 'string', enum: ['call', 'sms', 'email'] },
         missing: { type: 'string', enum: ['email', 'contact', 'phone'], description: 'Only leads with this field empty' },
+        contactable_by: { type: 'string', enum: ['call', 'sms', 'email'], description: 'Leave out leads who opted out of this channel. Use it when picking who to message.' },
         sort: { type: 'string', enum: ['score', 'follow', 'recent', 'name'], default: 'score' },
         limit: { type: 'number', default: 50, maximum: 500 }
       }
@@ -268,6 +290,7 @@ export const TOOLS = [
       const listKey = { to_dial: 'queue', follow_ups: 'follow', booked: 'booked', closed: 'closed', out: 'out', all: 'all' }[a.list || 'all'] || 'all';
       let leads = listLeads(coldLeads(o.id), { filter: listKey, q: a.query || '', sort: a.sort || 'score', channel: a.contacted_by || '' }, today());
       if (a.missing) leads = leads.filter((l) => !String(l[a.missing] || '').trim());
+      if (a.contactable_by) leads = leads.filter((l) => !l.doNotContact.includes(a.contactable_by));
       const limit = Math.min(Math.max(1, Number(a.limit) || 50), 500);
       return { offer: o.name, total: leads.length, shown: Math.min(limit, leads.length), leads: leads.slice(0, limit).map(brief) };
     }
@@ -444,6 +467,60 @@ export const TOOLS = [
     }
   },
   {
+    name: 'check_consent',
+    description:
+      'Before calling, texting or emailing a lead, check they have not asked you to stop. Give one lead or a list of leads (and optionally the channel). Returns, per lead, whether calls, SMS and email are OK. Read only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...offerArg,
+        lead: matchSchema,
+        leads: { type: 'array', maxItems: 500, items: matchSchema },
+        channel: { type: 'string', enum: CHANNELS, description: 'If given, each result also has ok: true/false for this channel' }
+      }
+    },
+    run(a) {
+      const o = pickOffer(a.offer);
+      const list = a.leads?.length ? a.leads : a.lead ? [a.lead] : [];
+      if (!list.length) throw new Error('Give lead or leads');
+      const results = list.map((m) => {
+        try {
+          const c = consentOf(findLead(o.id, m));
+          return a.channel ? { ...c, ok: c[{ call: 'calls_ok', sms: 'sms_ok', email: 'email_ok' }[a.channel]] } : c;
+        } catch (e) {
+          return { match: m, error: e.message };
+        }
+      });
+      return { offer: o.name, ...(a.channel ? { channel: a.channel, blocked: results.filter((r) => r.ok === false).length } : {}), results };
+    }
+  },
+  {
+    name: 'set_consent',
+    description:
+      'Record that a lead asked not to be contacted on a channel (opt_out), or said it is fine again (opt_in). Use opt_out straight away when someone replies STOP, unsubscribe, or asks not to be called/texted/emailed, and tell the user. opt_in only when the user tells you the lead agreed: set user_confirmed true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...offerArg,
+        lead: matchSchema,
+        opt_out: { type: 'array', items: { type: 'string', enum: [...CHANNELS, 'all'] } },
+        opt_in: { type: 'array', items: { type: 'string', enum: [...CHANNELS, 'all'] } },
+        reason: { type: 'string', description: 'e.g. "Replied STOP to the text on 20 Nov"' },
+        user_confirmed: { type: 'boolean', description: 'Required for opt_in' }
+      },
+      required: ['lead']
+    },
+    write: true,
+    run(a) {
+      const o = pickOffer(a.offer);
+      const l = findLead(o.id, a.lead);
+      if (a.opt_in?.length && !a.user_confirmed) throw new Error('Only opt a lead back in when the user says so (set user_confirmed: true).');
+      if (!a.opt_out?.length && !a.opt_in?.length) throw new Error('Give opt_out or opt_in');
+      const updated = setConsent(o.id, l.id, { block: a.opt_out || [], allow: a.opt_in || [], note: a.reason || '' });
+      return { offer: o.name, consent: consentOf(updated) };
+    }
+  },
+  {
     name: 'dialling_stats',
     description: 'The Dialling numbers for a month on an offer: dials, pick-up rate, bookings and so on, the same as the Dialling tab. Read only.',
     inputSchema: { type: 'object', properties: { ...offerArg, month: { type: 'string', description: 'YYYY-MM, defaults to this month' } } },
@@ -538,7 +615,7 @@ export function handleRpc(msg) {
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'closer-desk', title: 'Closer Desk CRM', version: VERSION },
         instructions:
-          'Closer Desk is the user\'s sales CRM. Call crm_overview first. Leads belong to an offer. Only calls the user made count on Dialling; never set count_on_dialling unless they ask. Prefer update_leads with only_fill_blanks for bulk fills.'
+          'Closer Desk is the user\'s sales CRM. Call crm_overview first. Leads belong to an offer. Check consent (check_consent) before contacting any lead, and record opt-outs with set_consent. Only calls the user made count on Dialling; never set count_on_dialling unless they ask. Prefer update_leads with only_fill_blanks for bulk fills.'
       });
     case 'ping':
       return ok(id, {});

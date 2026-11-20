@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf } from '$lib/leads.js';
+  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf, consentLabel } from '$lib/leads.js';
   import { ddmm } from '$lib/fmt.js';
 
   /** The top of a lead: score, name, status, call button, pitch angle and research, past calls. */
@@ -24,6 +24,9 @@
         {[lead.business && lead.contact, lead.suburb, lead.category].filter(Boolean).join(', ')}
       </p>
       <div class="tags">
+        {#if lead.doNotContact?.length}
+          <span class="chip t-red dnc" title={lead.dncNote || 'Asked not to be contacted this way'}><Icon name="x" size={13} />{consentLabel(lead.doNotContact)}</span>
+        {/if}
         {#if isDue(lead, today)}
           <span class="chip t-yellow"><Icon name="clock" size={13} />{lead.stage === 'callback' ? 'Callback' : 'Follow-up'} {lead.followUp === today ? 'due today' : `due ${ddmm(lead.followUp)}`}</span>
         {:else}
@@ -39,8 +42,20 @@
   </div>
 
   <div class="contact">
-    {#if lead.phone}<a class="btn primary call" href="tel:{tel(lead.phone)}"><Icon name="phone" size={17} /><span class="num">{lead.phone}</span></a>{/if}
-    {#if lead.email}<a class="btn small" href="mailto:{lead.email}"><Icon name="mail" size={15} />Email</a>{/if}
+    {#if lead.phone}
+      {#if lead.doNotContact?.includes('call')}
+        <span class="btn blocked" title="They asked not to be called"><Icon name="phone" size={17} /><span class="num">{lead.phone}</span><small>Don't call</small></span>
+      {:else}
+        <a class="btn primary call" href="tel:{tel(lead.phone)}"><Icon name="phone" size={17} /><span class="num">{lead.phone}</span></a>
+      {/if}
+    {/if}
+    {#if lead.email}
+      {#if lead.doNotContact?.includes('email')}
+        <span class="btn small blocked" title="They asked not to be emailed"><Icon name="mail" size={15} />No emails</span>
+      {:else}
+        <a class="btn small" href="mailto:{lead.email}"><Icon name="mail" size={15} />Email</a>
+      {/if}
+    {/if}
     {#each lead.extra.filter(([, v]) => linkFor(v)) as [k, v]}
       <a class="btn small" href={linkFor(v)} target="_blank" rel="noopener"><Icon name="external" size={14} />{k}</a>
     {/each}
@@ -70,7 +85,7 @@
     <ol class="hist" aria-label="Past dials">
       {#each lead.dials as d}
         <li class="t-{entryType(d.outcome)?.tone || 'none'}">
-          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${entryLabel(d.outcome, d.channel)}` : d.label}{d.subject ? `, "${d.subject}"` : d.note ? `, "${d.note.length > 70 ? d.note.slice(0, 70).trim() + '...' : d.note}"` : ''}
+          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${d.label || entryLabel(d.outcome, d.channel)}` : d.label}{d.subject ? `, "${d.subject}"` : d.note ? `, "${d.note.length > 70 ? d.note.slice(0, 70).trim() + '...' : d.note}"` : ''}
         </li>
       {/each}
     </ol>
@@ -211,5 +226,25 @@
   }
   .small {
     font-size: 13px;
+  }
+  .blocked {
+    cursor: not-allowed;
+    color: var(--red);
+    background: var(--red-soft);
+    border-color: color-mix(in srgb, var(--red) 35%, transparent);
+    text-decoration: line-through;
+    text-decoration-thickness: 1.5px;
+  }
+  .blocked small {
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .btn.blocked:not(.small) {
+    height: 46px;
+    padding: 0 18px;
+    font-size: 17px;
   }
 </style>

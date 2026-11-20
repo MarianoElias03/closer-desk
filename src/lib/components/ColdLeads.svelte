@@ -21,7 +21,8 @@
     whenLabel,
     listLeads,
     listView,
-    viewQuery
+    viewQuery,
+    consentLabel
   } from '$lib/leads.js';
   import { CALL_OUTCOMES } from '$lib/stats.js';
   import { ddmm, money } from '$lib/fmt.js';
@@ -228,7 +229,7 @@
                   {#if col.key === 'score'}
                     <span class="sc num" class:none={l.score == null}>{l.score ?? '–'}</span>
                   {:else if col.key === 'name'}
-                    <a class="nm" href="/leads/{l.id}{query}">{leadName(l)}</a>
+                    <a class="nm" href="/leads/{l.id}{query}">{leadName(l)}</a>{#if l.doNotContact?.length}<span class="dnc" title={consentLabel(l.doNotContact)}>{l.doNotContact.length === 3 ? 'DNC' : l.doNotContact.map((c) => (c === 'call' ? 'no call' : c === 'sms' ? 'no SMS' : 'no email')).join(', ')}</span>{/if}
                   {:else if col.key === 'contact'}
                     {l.contact}
                   {:else if col.key === 'phone'}
@@ -259,6 +260,8 @@
                     {#if l.call && !l.call.cancelled}
                       <span class="two-line"><span>{whenLabel(l.call.start, tz, false)}</span><span class="faint">{callOutcome(l.call.outcome).key === 'pending' ? 'Not logged' : callOutcome(l.call.outcome).label}</span></span>
                     {/if}
+                  {:else if col.key === 'consent'}
+                    {#if l.doNotContact?.length}<span class="dnc-cell">{consentLabel(l.doNotContact)}</span>{/if}
                   {:else if col.key === 'notes'}
                     <span class="clip" title={l.notes}>{l.notes}</span>
                   {:else if col.research}
@@ -582,6 +585,22 @@
     max-width: 260px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .dnc {
+    margin-left: 8px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--red-soft);
+    color: var(--red);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    vertical-align: 1px;
+  }
+  .dnc-cell {
+    color: var(--red);
+    font-weight: 600;
   }
   .tel,
   .em {

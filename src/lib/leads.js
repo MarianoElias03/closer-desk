@@ -13,6 +13,15 @@ export const CHANNELS = [
 ];
 export const channelOf = (k) => CHANNELS.find((c) => c.key === k) || CHANNELS[0];
 
+/** "Do not contact" when every channel is blocked, otherwise e.g. "No calls, no SMS". */
+export function consentLabel(list = []) {
+  if (!list.length) return '';
+  if (list.length === 3) return 'Do not contact';
+  const word = { call: 'calls', sms: 'SMS', email: 'emails' };
+  const parts = list.map((c) => word[c]);
+  return 'No ' + parts.join(', no ');
+}
+
 // the same outcome reads differently over text or email
 const WRITTEN = {
   sms: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They texted you', wrong_no: 'Wrong number' },
@@ -48,12 +57,15 @@ export const FILTERS = [
   { key: 'booked', label: 'Booked', test: (l) => l.stage === 'booked' },
   { key: 'closed', label: 'Closed', test: (l) => l.stage === 'call_closed' },
   { key: 'out', label: 'Out', test: (l) => ['not_interested', 'wrong_no', 'call_not_interested', 'call_unqualified'].includes(l.stage) },
+  { key: 'optout', label: 'Opted out', test: (l) => !!l.doNotContact?.length },
   { key: 'all', label: 'All', test: () => true }
 ];
 
 /** Ready to ring today: never called, no answer, or a callback whose date has come. */
 export function inQueue(l, today) {
   if (!DIALABLE.includes(l.stage)) return false;
+  // asked not to be called: never in the call queue
+  if (l.doNotContact?.includes('call')) return false;
   if (l.followUp) return l.followUp <= today;
   if (l.stage === 'callback') return true;
   return l.lastDialOn !== today;
@@ -339,7 +351,8 @@ export const COLUMNS = [
   { key: 'attempts', label: 'Calls made', dir: 'desc', get: (l) => l.attempts || null },
   { key: 'channel', label: 'Last contacted by', get: (l) => lastChannel(l) },
   { key: 'call', label: 'Booked call', get: (l) => (l.call && !l.call.cancelled ? l.call.start : null) },
-  { key: 'notes', label: 'Notes', get: (l) => l.notes.toLowerCase() || null }
+  { key: 'notes', label: 'Notes', get: (l) => l.notes.toLowerCase() || null },
+  { key: 'consent', label: 'Opted out of', get: (l) => consentLabel(l.doNotContact) || null }
 ];
 export const DEFAULT_COLUMNS = COLUMNS.filter((c) => c.on || c.fixed).map((c) => c.key);
 

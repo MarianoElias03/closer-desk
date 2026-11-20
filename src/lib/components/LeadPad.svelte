@@ -75,6 +75,9 @@
 <svelte:window onkeydown={onkey} />
 
 <div class="pad-wrap">
+  {#if lead.doNotContact?.includes('call')}
+    <p class="warn"><Icon name="x" size={15} />They asked not to be called{lead.dncNote ? ` (${lead.dncNote})` : ''}. Only log a call here if they rang you.</p>
+  {/if}
   <label class="field">
     <span class="sr-only">Note from this call</span>
     <input bind:value={note} placeholder="Note from this call (optional), e.g. spoke to receptionist, owner back Friday" />
@@ -104,6 +107,18 @@
   .pad-wrap {
     display: grid;
     gap: 14px;
+  }
+  .warn {
+    margin: 0;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--red-soft);
+    color: var(--ink);
+    font-size: 13.5px;
+    font-weight: 600;
   }
   .pads {
     display: grid;

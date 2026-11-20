@@ -6,7 +6,7 @@
   import LeadPad from '$lib/components/LeadPad.svelte';
   import LeadHistory from '$lib/components/LeadHistory.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
-  import { FILTERS, leadName, linkFor, viewQuery } from '$lib/leads.js';
+  import { FILTERS, leadName, linkFor, viewQuery, consentLabel } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
@@ -89,6 +89,41 @@
       goto(data.nav.next ? href(data.nav.next) : `/leads${query}`, { invalidateAll: true });
     } catch (e) {
       toast(e.message, 'error');
+    }
+  }
+
+  // ---- contact consent ----
+  const CONSENT = [
+    { key: 'call', label: 'Calls', icon: 'phone', no: "Don't call" },
+    { key: 'sms', label: 'SMS', icon: 'chat', no: "Don't text" },
+    { key: 'email', label: 'Emails', icon: 'mail', no: "Don't email" }
+  ];
+  let blocked = $state([]);
+  let consentFor = $state(null);
+  let reason = $state('');
+  let savingConsent = $state(false);
+  $effect(() => {
+    const key = `${lead.id}:${lead.doNotContact.join(',')}`;
+    if (key !== consentFor) {
+      consentFor = key;
+      blocked = [...lead.doNotContact];
+      reason = '';
+    }
+  });
+  const consentChanged = $derived(blocked.slice().sort().join() !== lead.doNotContact.slice().sort().join());
+  const flipConsent = (k) => (blocked = blocked.includes(k) ? blocked.filter((x) => x !== k) : [...blocked, k]);
+  async function saveConsent() {
+    savingConsent = true;
+    try {
+      const block = blocked.filter((k) => !lead.doNotContact.includes(k));
+      const allow = lead.doNotContact.filter((k) => !blocked.includes(k));
+      await api(`/api/leads/${lead.id}/consent`, 'POST', { block, allow, note: reason });
+      toast(blocked.length ? `${leadName(lead)}: ${consentLabel(blocked).toLowerCase()}` : `${leadName(lead)} can be contacted again`);
+      await invalidateAll();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      savingConsent = false;
     }
   }
 
@@ -219,13 +254,44 @@
                 <dt>{k}</dt>
                 <dd>
                   {#if v == null || v === ''}<span class="faint">Not set</span>
-                  {:else if k === 'Mobile'}<a href="tel:{String(v).replace(/[^\d+]/g, '')}">{v}</a>
-                  {:else if k === 'Email'}<a href="mailto:{v}">{v}</a>
+                  {:else if k === 'Mobile' && !lead.doNotContact.includes('call')}<a href="tel:{String(v).replace(/[^\d+]/g, '')}">{v}</a>
+                  {:else if k === 'Email' && !lead.doNotContact.includes('email')}<a href="mailto:{v}">{v}</a>
                   {:else}{v}{/if}
                 </dd>
               </div>
             {/each}
           </dl>
+        {/if}
+      </section>
+
+      <section class="panel consent" class:has={lead.doNotContact.length}>
+        <h2>Contact consent</h2>
+        <p class="faint small">If they ask you to stop calling, texting or emailing, switch that off here. Alfred checks this before contacting them.</p>
+        <ul class="cons">
+          {#each CONSENT as c}
+            {@const off = blocked.includes(c.key)}
+            <li>
+              <span class="cl"><Icon name={c.icon} size={15} />{c.label}</span>
+              <button class="sw" class:off role="switch" aria-checked={!off} aria-label="{c.label}: {off ? 'opted out' : 'OK to contact'}" onclick={() => flipConsent(c.key)}>
+                <span class="knob"></span>
+              </button>
+              <span class="state" class:off>{off ? c.no : 'OK'}</span>
+            </li>
+          {/each}
+        </ul>
+        {#if blocked.length < 3}
+          <button class="btn small ghost all" onclick={() => (blocked = ['call', 'sms', 'email'])}>Don't contact at all</button>
+        {/if}
+        {#if consentChanged}
+          <div class="csave">
+            <label class="field">Why (optional)<input bind:value={reason} placeholder="e.g. replied STOP, asked on the phone" /></label>
+            <div class="acts">
+              <button class="btn small ghost" onclick={() => (blocked = [...lead.doNotContact])}>Cancel</button>
+              <button class="btn small primary" onclick={saveConsent} disabled={savingConsent}><Icon name="check" size={14} />Save</button>
+            </div>
+          </div>
+        {:else if lead.doNotContact.length && lead.dncAt}
+          <p class="since small">Since {when(lead.dncAt)}{lead.dncNote ? `: ${lead.dncNote}` : ''}</p>
         {/if}
       </section>
 
@@ -408,6 +474,77 @@
   }
   .info a {
     color: var(--ink);
+  }
+  .consent.has {
+    box-shadow: inset 0 3px 0 var(--red), var(--shadow);
+  }
+  .consent p {
+    margin: -6px 0 12px;
+  }
+  .cons {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+  .cons li {
+    display: grid;
+    grid-template-columns: 1fr auto 96px;
+    align-items: center;
+    gap: 10px;
+  }
+  .cl {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    font-weight: 600;
+  }
+  .sw {
+    position: relative;
+    width: 40px;
+    height: 24px;
+    border-radius: 999px;
+    border: 0;
+    padding: 0;
+    background: var(--green);
+    transition: background 0.15s;
+  }
+  .sw.off {
+    background: var(--red);
+  }
+  .knob {
+    position: absolute;
+    top: 3px;
+    left: 19px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: left 0.18s var(--ease-out);
+  }
+  .sw.off .knob {
+    left: 3px;
+  }
+  .state {
+    font-size: 13px;
+    color: var(--ink-3);
+  }
+  .state.off {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .all {
+    color: var(--red);
+  }
+  .csave {
+    display: grid;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .since {
+    margin: 6px 0 0;
+    color: var(--ink-2);
   }
   .ro {
     display: grid;
