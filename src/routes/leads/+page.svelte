@@ -1,5 +1,4 @@
 <script>
-  import { page } from '$app/state';
   import Icon from '$lib/components/Icon.svelte';
   import Stat from '$lib/components/Stat.svelte';
   import LeadDialer from '$lib/components/LeadDialer.svelte';
@@ -12,17 +11,11 @@
 
   let importing = $state(false);
   let dialId = $state(null);
-  let expanded = $state(Number(page.url.searchParams.get('lead')) || null);
 
   const count = (key) => data.leads.filter((l) => FILTERS.find((f) => f.key === key).test(l, data.today)).length;
   const due = $derived(data.leads.filter((l) => isDue(l, data.today)).length);
   const dialledToday = $derived(data.leads.reduce((n, l) => n + l.dials.filter((d) => d.date === data.today).length, 0));
   const cash = $derived(data.leads.reduce((n, l) => n + (l.stage === 'call_closed' ? l.call?.cash || 0 : 0), 0));
-
-  function dialNow(id) {
-    dialId = id;
-    document.querySelector('.dialer')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
 </script>
 
 <svelte:head><title>Leads · Closer Desk</title></svelte:head>
@@ -49,8 +42,8 @@
   </section>
 {/if}
 
-<LeadDialer leads={data.leads} today={data.today} tz={data.tz} bind:currentId={dialId} onopen={(id) => (expanded = id)} />
-<ColdLeads leads={data.leads} today={data.today} tz={data.tz} linkable={data.linkable} bind:expanded ondial={dialNow} />
+<LeadDialer leads={data.leads} today={data.today} tz={data.tz} bind:currentId={dialId} />
+<ColdLeads leads={data.leads} today={data.today} tz={data.tz} />
 
 {#if importing}
   <LeadImport offerName={data.offer.name} today={data.today} onclose={() => (importing = false)} />

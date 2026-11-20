@@ -12,6 +12,8 @@ Environment=HOST=0.0.0.0
 Environment=DATA_DIR=/var/lib/closer-desk
 Environment=PROTOCOL_HEADER=x-forwarded-proto
 Environment=HOST_HEADER=x-forwarded-host
+# open connections get 5s to finish on restart (the default is 30s)
+Environment=SHUTDOWN_TIMEOUT=5
 ExecStart=/usr/local/bin/node build/index.js
 Restart=always
 RestartSec=3

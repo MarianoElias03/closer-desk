@@ -295,3 +295,71 @@ export function sinceLabel(iso, today, tz) {
   const days = Math.round((Date.UTC(...today.split('-').map((n, i) => n - (i === 1))) - Date.UTC(...d.split('-').map((n, i) => n - (i === 1)))) / 864e5);
   return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
 }
+
+// ---------- list order (shared by the lead list and the lead page's previous / next) ----------
+
+export const SORTS = [
+  { key: 'score', label: 'Highest score', cmp: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.id - b.id },
+  { key: 'follow', label: 'Follow-up date', cmp: (a, b) => (a.followUp || '9').localeCompare(b.followUp || '9') || a.id - b.id },
+  { key: 'recent', label: 'Last contacted', cmp: (a, b) => (b.lastContactAt || '').localeCompare(a.lastContactAt || '') || b.id - a.id },
+  { key: 'name', label: 'A to Z', cmp: (a, b) => leadName(a).localeCompare(leadName(b)) || a.id - b.id }
+];
+
+/** The list's view settings from a URL, with defaults. */
+export function listView(params) {
+  const f = params.get('f');
+  const s = params.get('s');
+  return {
+    filter: FILTERS.some((x) => x.key === f) ? f : 'queue',
+    sort: SORTS.some((x) => x.key === s) ? s : 'score',
+    q: (params.get('q') || '').slice(0, 100)
+  };
+}
+export function viewQuery({ filter, sort, q }) {
+  const p = new URLSearchParams();
+  if (filter !== 'queue') p.set('f', filter);
+  if (sort !== 'score') p.set('s', sort);
+  if (q.trim()) p.set('q', q.trim());
+  const s = p.toString();
+  return s ? '?' + s : '';
+}
+
+function matches(l, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const digits = needle.replace(/\D/g, '');
+  if (digits.length >= 3 && l.phone.replace(/\D/g, '').includes(digits)) return true;
+  return [l.business, l.contact, l.suburb, l.category, l.email, l.notes].some((s) => s.toLowerCase().includes(needle));
+}
+
+const sorted = (leads, { sort, q }) => leads.filter((l) => matches(l, q)).sort(SORTS.find((s) => s.key === sort).cmp);
+
+export function listLeads(leads, view, today) {
+  const f = FILTERS.find((x) => x.key === view.filter);
+  return sorted(leads, view).filter((l) => f.test(l, today));
+}
+
+/**
+ * Where a lead sits in the list it was opened from. If logging an outcome just moved it out of that
+ * list (say, out of To dial), previous and next still step from the spot it was in.
+ */
+export function neighbours(leads, id, view, today) {
+  const f = FILTERS.find((x) => x.key === view.filter);
+  const all = sorted(leads, view);
+  const at = all.findIndex((l) => l.id === id);
+  const inList = (l) => f.test(l, today);
+  if (at < 0) {
+    // this lead isn't in that search at all: next starts the list from the top
+    const list = all.filter(inList);
+    return { prev: null, next: list[0]?.id ?? null, position: null, total: list.length };
+  }
+  const before = all.slice(0, at).filter(inList);
+  const after = all.slice(at + 1).filter(inList);
+  const here = inList(all[at]);
+  return {
+    prev: before.at(-1)?.id ?? null,
+    next: after[0]?.id ?? null,
+    position: here ? before.length + 1 : null,
+    total: before.length + after.length + (here ? 1 : 0)
+  };
+}

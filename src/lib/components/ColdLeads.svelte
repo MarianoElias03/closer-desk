@@ -1,108 +1,39 @@
 <script>
-  import { slide, fade } from 'svelte/transition';
-  import { tick } from 'svelte';
-  import { invalidateAll } from '$app/navigation';
+  import { slide } from 'svelte/transition';
+  import { page } from '$app/state';
+  import { goto, invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import LeadHistory from './LeadHistory.svelte';
-  import { CALL_OUTCOMES } from '$lib/stats.js';
-  import { FILTERS, stageOf, leadName, linkFor, isDue, sinceLabel } from '$lib/leads.js';
+  import { FILTERS, SORTS, stageOf, leadName, isDue, sinceLabel, listLeads, listView, viewQuery } from '$lib/leads.js';
   import { ddmm, money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  let { leads, today, tz, linkable = [], expanded = $bindable(null), ondial } = $props();
+  let { leads, today, tz } = $props();
 
-  let filter = $state('queue');
-  let q = $state('');
-  let sort = $state('score');
+  // filter, search and sort live in the URL, so a lead page knows the order you were browsing in
+  // and Back lands on the same view
+  const start = listView(page.url.searchParams);
+  let filter = $state(start.filter);
+  let q = $state(start.q);
+  let sort = $state(start.sort);
   let limit = $state(100);
-  let form = $state({});
   let adding = $state(false);
   let draft = $state({ business: '', contact: '', phone: '', suburb: '' });
-  let pickCall = $state('');
+
+  const query = $derived(viewQuery({ filter, sort, q }));
+  $effect(() => {
+    const want = query;
+    if (want !== page.url.search) goto(page.url.pathname + want, { replaceState: true, keepFocus: true, noScroll: true });
+  });
 
   const counts = $derived(Object.fromEntries(FILTERS.map((f) => [f.key, leads.filter((l) => f.test(l, today)).length])));
-  const shown = $derived.by(() => {
-    const f = FILTERS.find((x) => x.key === filter);
-    const needle = q.trim().toLowerCase();
-    const digits = needle.replace(/\D/g, '');
-    const list = leads.filter((l) => f.test(l, today)).filter((l) => {
-      if (!needle) return true;
-      if (digits.length >= 3 && l.phone.replace(/\D/g, '').includes(digits)) return true;
-      return [l.business, l.contact, l.suburb, l.category, l.email, l.notes].some((s) => s.toLowerCase().includes(needle));
-    });
-    const by = {
-      score: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.id - b.id,
-      recent: (a, b) => (b.lastDialOn || '').localeCompare(a.lastDialOn || '') || b.id - a.id,
-      name: (a, b) => leadName(a).localeCompare(leadName(b)),
-      follow: (a, b) => (a.followUp || '9').localeCompare(b.followUp || '9')
-    };
-    return list.sort(by[sort]);
-  });
+  const shown = $derived(listLeads(leads, { filter, q, sort }, today));
 
-  // opened from elsewhere (the dialler, a call's "Open lead"): show it
-  $effect(() => {
-    const id = expanded;
-    if (id == null) return;
-    const l = leads.find((x) => x.id === id);
-    if (!l) return;
-    if (!shown.some((x) => x.id === id)) filter = 'all';
-    if (form.id !== id) fill(l);
-    tick().then(() => document.getElementById(`lead-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-  });
-
-  function fill(l) {
-    form = { id: l.id, business: l.business, contact: l.contact, phone: l.phone, email: l.email, suburb: l.suburb, category: l.category, score: l.score ?? '', followUp: l.followUp || '', notes: l.notes };
-    pickCall = '';
-  }
-  function toggle(l) {
-    if (expanded === l.id) expanded = null;
-    else {
-      fill(l);
-      expanded = l.id;
-    }
-  }
-
-  async function api(path, method, body) {
-    const r = await fetch(path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(j.message || 'Could not save');
-    return j;
-  }
-  async function save(l) {
-    try {
-      const { id, ...patch } = form;
-      await api(`/api/leads/${l.id}`, 'PATCH', patch);
-      toast(`${leadName({ ...l, ...patch })} saved`);
-      await invalidateAll();
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  }
-  async function remove(l) {
-    const n = l.dials.filter((d) => d.counted).length;
-    if (!confirm(`Delete ${leadName(l)}?${n ? ` Its ${n} ${n === 1 ? 'dial comes' : 'dials come'} off your daily numbers too.` : ''}`)) return;
-    try {
-      await api(`/api/leads/${l.id}`, 'DELETE');
-      toast(`Deleted ${leadName(l)}`);
-      expanded = null;
-      await invalidateAll();
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  }
-  async function link(l, callId) {
-    try {
-      await api(`/api/leads/${l.id}`, 'PATCH', { callId });
-      toast(callId ? 'Call linked to this lead' : 'Call unlinked');
-      await invalidateAll();
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  }
   async function add() {
     try {
-      const { lead } = await api('/api/leads', 'POST', draft);
-      toast(`Added ${leadName(lead)}`);
+      const r = await fetch('/api/leads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.message || 'Could not add that lead');
+      toast(`Added ${leadName(j.lead)}`);
       draft = { business: '', contact: '', phone: '', suburb: '' };
       adding = false;
       await invalidateAll();
@@ -110,17 +41,13 @@
       toast(e.message, 'error');
     }
   }
-
-  const callOutcome = (k) => CALL_OUTCOMES.find((o) => o.key === k) || CALL_OUTCOMES[0];
-  const when = (iso) =>
-    new Intl.DateTimeFormat('en-AU', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
 </script>
 
 <section class="panel cold">
   <div class="head">
     <div>
       <h2>Lead list</h2>
-      <p class="muted small">Everything on this offer's call list. Click a lead to edit it, see its history or link its booked call.</p>
+      <p class="muted small">Everything on this offer's call list. Click a lead to open its page.</p>
     </div>
     <div class="tools">
       <label class="search">
@@ -128,10 +55,7 @@
         <input bind:value={q} placeholder="Business, name, suburb or number" aria-label="Search leads" />
       </label>
       <select bind:value={sort} aria-label="Sort leads">
-        <option value="score">Highest score</option>
-        <option value="follow">Follow-up date</option>
-        <option value="recent">Last dialled</option>
-        <option value="name">A to Z</option>
+        {#each SORTS as s}<option value={s.key}>{s.label}</option>{/each}
       </select>
       <button class="btn small" onclick={() => (adding = !adding)}><Icon name="plus" size={15} />Add lead</button>
     </div>
@@ -159,8 +83,8 @@
     <ul class="list">
       {#each shown.slice(0, limit) as l (l.id)}
         {@const st = stageOf(l)}
-        <li id="lead-{l.id}" class="t-{st.tone}" class:open={expanded === l.id} in:fade={{ duration: 160 }}>
-          <button class="row" onclick={() => toggle(l)} aria-expanded={expanded === l.id}>
+        <li class="t-{st.tone}">
+          <a class="row" href="/leads/{l.id}{query}">
             <span class="sc num" class:none={l.score == null}>{l.score ?? '–'}</span>
             <span class="nm">
               <strong>{leadName(l)}</strong>
@@ -171,69 +95,9 @@
               <span class="chip"><span class="dot"></span>{st.label}{l.call?.cash ? ` ${money(l.call.cash)}` : ''}</span>
               {#if l.followUp && !l.call}<span class="fu" class:due={isDue(l, today)}><Icon name="clock" size={13} />{ddmm(l.followUp)}</span>{/if}
               {#if l.lastContactAt}<span class="faint at" title="Last contacted">{sinceLabel(l.lastContactAt, today, tz)}</span>{:else if l.attempts}<span class="faint at">{l.attempts}x</span>{/if}
+              <span class="go" aria-hidden="true"><Icon name="right" size={16} /></span>
             </span>
-          </button>
-
-          {#if expanded === l.id}
-            <div class="edit" transition:slide={{ duration: 200 }}>
-              <div class="grid">
-                <label class="field">Business<input bind:value={form.business} /></label>
-                <label class="field">Contact name<input bind:value={form.contact} /></label>
-                <label class="field">Mobile<input bind:value={form.phone} inputmode="tel" /></label>
-                <label class="field">Email<input bind:value={form.email} type="email" /></label>
-                <label class="field">Suburb<input bind:value={form.suburb} /></label>
-                <label class="field">Category<input bind:value={form.category} /></label>
-                <label class="field">Prospect score<input bind:value={form.score} inputmode="decimal" /></label>
-                <label class="field">Follow-up date<input bind:value={form.followUp} type="date" /></label>
-              </div>
-              <label class="field">Notes<textarea bind:value={form.notes} placeholder="Who you spoke to, objections, best time to call"></textarea></label>
-
-              {#if l.extra.length}
-                <dl class="facts">
-                  {#each l.extra as [k, v]}
-                    <div>
-                      <dt>{k}</dt>
-                      <dd>{#if linkFor(v)}<a href={linkFor(v)} target="_blank" rel="noopener">{v}</a>{:else}{v}{/if}</dd>
-                    </div>
-                  {/each}
-                </dl>
-              {/if}
-
-              <LeadHistory lead={l} {tz} {today} />
-
-              <div class="block">
-                <span class="k">Booked call</span>
-                {#if l.call}
-                  {@const co = callOutcome(l.call.outcome)}
-                  <div class="call t-{co.tone}">
-                    <span><strong>{l.call.title}</strong>, {when(l.call.start)}{l.call.cancelled ? ' (cancelled)' : ''}</span>
-                    <span class="chip"><span class="dot"></span>{co.key === 'pending' ? 'Outcome not logged' : co.label}{l.call.cash ? `, ${money(l.call.cash)}` : ''}</span>
-                    <a class="btn small ghost" href="/calls?open={encodeURIComponent(l.call.id)}">Open call</a>
-                    <button class="btn small ghost" onclick={() => link(l, null)}>Unlink</button>
-                  </div>
-                {:else}
-                  <p class="faint small">
-                    {l.stage === 'booked' ? 'Waiting for the booking to show up on your calendar. It links by mobile, email or business name on the next sync.' : 'Book them and the calendar event links here, with its closing outcome.'}
-                  </p>
-                  {#if linkable.length}
-                    <div class="pick">
-                      <select bind:value={pickCall} aria-label="Pick a call to link">
-                        <option value="">Link a calendar call by hand</option>
-                        {#each linkable as c}<option value={c.id}>{c.prospect || c.title}, {when(c.start)}</option>{/each}
-                      </select>
-                      <button class="btn small" disabled={!pickCall} onclick={() => link(l, pickCall)}><Icon name="link" size={14} />Link</button>
-                    </div>
-                  {/if}
-                {/if}
-              </div>
-
-              <div class="acts">
-                <button class="btn small ghost danger" onclick={() => remove(l)}>Delete lead</button>
-                <button class="btn small" onclick={() => ondial?.(l.id)}><Icon name="phone" size={14} />Dial now</button>
-                <button class="btn small primary" onclick={() => save(l)}><Icon name="check" size={14} />Save</button>
-              </div>
-            </div>
-          {/if}
+          </a>
         </li>
       {/each}
     </ul>
@@ -358,9 +222,11 @@
     border: 1px solid var(--line-2);
     background: var(--raised);
     border-left: 4px solid var(--tone);
+    transition: box-shadow 0.15s, transform 0.15s var(--ease-out);
   }
-  li.open {
+  li:hover {
     box-shadow: var(--shadow);
+    transform: translateX(2px);
   }
   .row {
     width: 100%;
@@ -368,10 +234,8 @@
     grid-template-columns: 40px minmax(0, 1fr) 130px auto;
     gap: 12px;
     align-items: center;
-    padding: 10px 14px 10px 10px;
-    border: 0;
-    background: transparent;
-    text-align: left;
+    padding: 10px 12px 10px 10px;
+    text-decoration: none;
     color: var(--ink);
   }
   .sc {
@@ -426,76 +290,12 @@
     min-width: 22px;
     text-align: right;
   }
-  .edit {
-    padding: 4px 16px 16px;
-    display: grid;
-    gap: 14px;
-  }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 10px;
-  }
-  .facts {
-    margin: 0;
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-    gap: 10px 18px;
-    padding: 12px 14px;
-    border-radius: 10px;
-    background: var(--surface);
-  }
-  .facts dt {
-    font-size: 12px;
+  .go {
+    display: inline-flex;
     color: var(--ink-3);
   }
-  .facts dd {
-    margin: 2px 0 0;
-    font-size: 13.5px;
-    overflow-wrap: anywhere;
-  }
-  .block {
-    display: grid;
-    gap: 6px;
-  }
-  .block p {
-    margin: 0;
-  }
-  .k {
-    font-size: 11.5px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--ink-3);
-  }
-  .call {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 12px;
-    align-items: center;
-    font-size: 13.5px;
-  }
-  .call > span:first-child {
-    margin-right: auto;
-  }
-  .pick {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .pick select {
-    flex: 1;
-    min-width: 0;
-  }
-  .acts {
-    display: flex;
-    gap: 8px;
-    justify-content: end;
-    flex-wrap: wrap;
-  }
-  .acts .danger {
-    margin-right: auto;
-    color: var(--red);
+  li:hover .go {
+    color: var(--ink);
   }
   .more {
     justify-self: center;
@@ -514,10 +314,10 @@
     .row {
       grid-template-columns: 34px minmax(0, 1fr) auto;
     }
-    .ph {
+    .ph,
+    .at {
       display: none;
     }
-    .grid,
     .add {
       grid-template-columns: 1fr 1fr;
     }

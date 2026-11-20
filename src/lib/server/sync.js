@@ -273,4 +273,6 @@ export function startScheduler() {
   const tick = () => syncAll().catch((e) => console.error('[sync]', e));
   setTimeout(tick, 3000);
   timer = setInterval(tick, 10 * 60 * 1000);
+  // let systemd restarts finish straight away instead of waiting out the stop timeout
+  process.once('sveltekit:shutdown', () => clearInterval(timer));
 }
