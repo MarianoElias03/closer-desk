@@ -69,7 +69,25 @@ Production build: `npm run build`, then `node build`. Set `PORT`, `HOST` and `DA
 | `OWNER_NAME` | Name used in the greeting on the Today page |
 | `DATA_DIR` | Where the SQLite database lives (default `./data`) |
 | `NO_SYNC` | Set to turn off the 10-minute background sync |
+| `CLOSER_MCP_TOKEN` | Turns on the MCP endpoint for AI assistants (at least 24 characters) |
 
 The keywords that decide which calendar events count as sales calls are set in the app, under Settings.
+
+## For AI assistants (MCP)
+
+Closer Desk serves an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp` (Streamable HTTP), so an assistant can read and update the CRM. Set `CLOSER_MCP_TOKEN` and connect with the header `Authorization: Bearer <token>`. The tools are part of the app, so they change with the code on every deploy, and the server reports the commit it was built from.
+
+| Tool | What it does |
+| --- | --- |
+| `crm_overview` | Offers, lead counts per list, rules |
+| `search_leads` | Find leads by list, text, channel or missing field |
+| `get_lead` | One lead with notes, research columns, booked call and history |
+| `update_lead`, `update_leads` | Change fields on one or many leads (bulk fills only fill blanks by default) |
+| `add_lead`, `import_leads` | Add leads, with duplicate checks |
+| `log_contact` | Add a call, SMS or email to a lead's history |
+| `dialling_stats` | A month's Dialling numbers |
+| `recent_changes` | What was changed through the endpoint |
+
+Only calls you made can count on the Dialling numbers, and only when the assistant is told to count them. There is no delete tool. Every write is recorded in the `api_log` table.
 
 All names, phone numbers and figures in the screenshots are made up.

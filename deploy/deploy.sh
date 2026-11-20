@@ -5,6 +5,8 @@ set -euo pipefail
 CT_ID="${CT_ID:-100}"
 cd "$(dirname "$0")/.."
 npx vite build >/dev/null
+# the commit this build came from, shown to MCP clients (with -dirty if there were uncommitted edits)
+echo "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet HEAD 2>/dev/null || echo -dirty)" > build/VERSION
 tar czf /tmp/closer-desk.tgz build package.json package-lock.json scripts src/lib/server/db.js deploy/closer-desk.service
 pct push "$CT_ID" /tmp/closer-desk.tgz /tmp/closer-desk.tgz
 pct exec "$CT_ID" -- bash -c '

@@ -20,7 +20,7 @@ const WRITTEN = {
 };
 /** Label for an outcome on a channel, e.g. "No reply" for an SMS that got no answer. */
 export function entryLabel(outcome, channel = 'call') {
-  if (!outcome) return 'Note';
+  if (!outcome) return channel === 'sms' ? 'Sent a text' : channel === 'email' ? 'Sent an email' : 'Note';
   return WRITTEN[channel]?.[outcome] || entryType(outcome)?.label || 'Note';
 }
 
@@ -317,12 +317,87 @@ export function sinceLabel(iso, today, tz) {
 
 // ---------- list order (shared by the lead list and the lead page's previous / next) ----------
 
-export const SORTS = [
-  { key: 'score', label: 'Highest score', cmp: (a, b) => (b.score ?? -1) - (a.score ?? -1) || a.id - b.id },
-  { key: 'follow', label: 'Follow-up date', cmp: (a, b) => (a.followUp || '9').localeCompare(b.followUp || '9') || a.id - b.id },
-  { key: 'recent', label: 'Last contacted', cmp: (a, b) => (b.lastContactAt || '').localeCompare(a.lastContactAt || '') || b.id - a.id },
-  { key: 'name', label: 'A to Z', cmp: (a, b) => leadName(a).localeCompare(leadName(b)) || a.id - b.id }
+// Columns the lead list can show. `get` is the value used for sorting; empty values always sort last.
+// Research columns from the spreadsheet are added per offer as "x:<column name>".
+const STAGE_ORDER = Object.keys(STAGES);
+const numeric = (v) => {
+  const n = parseFloat(String(v ?? '').replace(/[^\d.-]/g, ''));
+  return Number.isFinite(n) && /\d/.test(String(v ?? '')) ? n : null;
+};
+
+export const COLUMNS = [
+  { key: 'score', label: 'Score', dir: 'desc', get: (l) => l.score, on: true },
+  { key: 'name', label: 'Business', fixed: true, get: (l) => leadName(l).toLowerCase() },
+  { key: 'contact', label: 'Contact', get: (l) => l.contact.toLowerCase() || null, on: true },
+  { key: 'phone', label: 'Mobile', get: (l) => l.phone || null, on: true },
+  { key: 'status', label: 'Status', get: (l) => STAGE_ORDER.indexOf(l.stage), on: true },
+  { key: 'last', label: 'Last contact', dir: 'desc', get: (l) => l.lastContactAt, on: true },
+  { key: 'follow', label: 'Follow-up', get: (l) => l.followUp, on: true },
+  { key: 'suburb', label: 'Suburb', get: (l) => l.suburb.toLowerCase() || null, on: true },
+  { key: 'category', label: 'Category', get: (l) => l.category.toLowerCase() || null },
+  { key: 'email', label: 'Email', get: (l) => l.email.toLowerCase() || null },
+  { key: 'attempts', label: 'Calls made', dir: 'desc', get: (l) => l.attempts || null },
+  { key: 'channel', label: 'Last contacted by', get: (l) => lastChannel(l) },
+  { key: 'call', label: 'Booked call', get: (l) => (l.call && !l.call.cancelled ? l.call.start : null) },
+  { key: 'notes', label: 'Notes', get: (l) => l.notes.toLowerCase() || null }
 ];
+export const DEFAULT_COLUMNS = COLUMNS.filter((c) => c.on || c.fixed).map((c) => c.key);
+
+export function lastChannel(l) {
+  return l.dials.filter((d) => d.date).at(-1)?.channel || null;
+}
+
+/** Research columns found on any lead, in sheet order. */
+export function researchColumns(leads) {
+  const seen = new Map();
+  for (const l of leads) for (const [k, v] of l.extra) if (!seen.has(k)) seen.set(k, numeric(v) != null);
+  for (const l of leads) for (const [k, v] of l.extra) if (v && numeric(v) == null) seen.set(k, false);
+  return [...seen].map(([name, num]) => ({
+    key: 'x:' + name,
+    label: name,
+    research: true,
+    dir: num ? 'desc' : 'asc',
+    get: (l) => {
+      const v = l.extra.find(([k]) => k === name)?.[1];
+      if (!v) return null;
+      return num ? numeric(v) : v.toLowerCase();
+    }
+  }));
+}
+
+/** Sort spec "key" (natural direction) or "-key" (reversed). Old links used "recent" for last contact. */
+function parseSort(s) {
+  const rev = String(s || '').startsWith('-');
+  let key = String(s || '').replace(/^-/, '');
+  if (key === 'recent') key = 'last';
+  return { key, rev };
+}
+const columnFor = (key) => COLUMNS.find((c) => c.key === key) || (key.startsWith('x:') ? null : undefined);
+
+function comparator(sort, leads) {
+  const { key, rev } = parseSort(sort);
+  const col = columnFor(key) ?? researchColumns(leads).find((c) => c.key === key) ?? COLUMNS[0];
+  const down = (col.dir === 'desc') !== rev;
+  return (a, b) => {
+    const x = col.get(a);
+    const y = col.get(b);
+    const xe = x == null || x === '';
+    const ye = y == null || y === '';
+    if (xe || ye) return xe && ye ? a.id - b.id : xe ? 1 : -1;
+    const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y));
+    return (down ? -c : c) || a.id - b.id;
+  };
+}
+
+/** Sort choices for the dropdown (the headers sort by any column). */
+export const SORTS = [
+  { key: 'score', label: 'Highest score' },
+  { key: 'follow', label: 'Follow-up date' },
+  { key: 'last', label: 'Last contacted' },
+  { key: '-last', label: 'Longest since contact' },
+  { key: 'name', label: 'A to Z' }
+];
+export const sortState = (sort) => parseSort(sort);
 
 /** The list's view settings from a URL, with defaults. */
 export function listView(params) {
@@ -331,7 +406,7 @@ export function listView(params) {
   const c = params.get('c');
   return {
     filter: FILTERS.some((x) => x.key === f) ? f : 'queue',
-    sort: SORTS.some((x) => x.key === s) ? s : 'score',
+    sort: /^-?([a-z]+|x:.{1,80})$/.test(s || '') ? s : 'score',
     q: (params.get('q') || '').slice(0, 100),
     channel: CHANNELS.some((x) => x.key === c) ? c : ''
   };
@@ -358,7 +433,7 @@ function matches(l, q) {
 export const usedChannel = (l, channel) => !channel || l.dials.some((d) => d.channel === channel);
 
 const sorted = (leads, { sort, q, channel }) =>
-  leads.filter((l) => matches(l, q) && usedChannel(l, channel)).sort(SORTS.find((s) => s.key === sort).cmp);
+  leads.filter((l) => matches(l, q) && usedChannel(l, channel)).sort(comparator(sort, leads));
 
 export function listLeads(leads, view, today) {
   const f = FILTERS.find((x) => x.key === view.filter);
