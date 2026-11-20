@@ -4,6 +4,7 @@
   import Icon from './Icon.svelte';
   import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
+  import { addDays } from '$lib/time.js';
 
   let { lead, tz, today, reasons = {} } = $props();
   const listId = `reasons-${Math.random().toString(36).slice(2, 8)}`;
@@ -31,7 +32,7 @@
 
   function blankDraft(channel = 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false };
+    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false, followUp: addDays(now.date, 1) };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -118,6 +119,9 @@
       <input required={f.outcome !== (f.was ?? null)} bind:value={f.reason} list="{listId}-{f.outcome}" placeholder={reasonOptions(f.outcome, reasons).slice(0, 3).join(', ') || 'More detail'} maxlength="80" />
       <datalist id="{listId}-{f.outcome}">{#each reasonOptions(f.outcome, reasons) as r}<option value={r}></option>{/each}</datalist>
     </label>
+  {/if}
+  {#if f.outcome === 'callback' && 'followUp' in f}
+    <label class="field">Call back on<input type="date" bind:value={f.followUp} min={today} required /></label>
   {/if}
   {#if f.channel === 'email'}
     <label class="field wide">Subject<input bind:value={f.subject} placeholder="Subject line" /></label>

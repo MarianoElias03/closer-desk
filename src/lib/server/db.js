@@ -804,8 +804,10 @@ export function removeDial(offerId, leadId, dialId) {
     if (!d) return getColdLead(offerId, leadId);
     if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
     // undoing the latest dial puts the follow-up date back to what it was before that dial
-    const latest = db.prepare('SELECT MAX(id) id FROM lead_dials WHERE lead_id = ? AND counted = 1').get(d.lead_id).id;
-    if (d.counted && latest === d.id) db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(d.prev_follow_up, new Date().toISOString(), d.lead_id);
+    // (counted dials, and callbacks added by hand, are the entries that move the follow-up date)
+    const moves = `(counted = 1 OR (outcome = 'callback' AND label = ''))`;
+    const latest = db.prepare(`SELECT MAX(id) id FROM lead_dials WHERE lead_id = ? AND ${moves}`).get(d.lead_id).id;
+    if ((d.counted || (d.outcome === 'callback' && !d.label)) && latest === d.id) db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(d.prev_follow_up, new Date().toISOString(), d.lead_id);
     db.prepare('DELETE FROM lead_dials WHERE id = ?').run(d.id);
     return getColdLead(offerId, leadId);
   })();
@@ -985,17 +987,22 @@ function entryFields(e) {
 export function addLeadEntry(offerId, leadId, e) {
   const f = entryFields(e);
   return db.transaction(() => {
-    const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
+    const l = db.prepare('SELECT id, follow_up FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
     if (f.extId) {
       const seen = db.prepare('SELECT id FROM lead_dials WHERE lead_id = ? AND ext_id = ?').get(l.id, f.extId);
       if (seen) return { ...getColdLead(offerId, l.id), duplicateOf: seen.id };
     }
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    const ins = db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       l.id, offerId, f.date, f.outcome, f.reason, f.channel, f.subject, f.note, f.extId, f.counted ? 1 : 0, f.at
     );
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
-    db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
+    // a callback added by hand sets the lead's follow-up date (undo puts the old one back)
+    const fu = f.outcome === 'callback' && /^\d{4}-\d{2}-\d{2}$/.test(e.followUp || '') ? e.followUp : null;
+    if (fu) {
+      db.prepare('UPDATE lead_dials SET prev_follow_up = ? WHERE id = ?').run(l.follow_up, ins.lastInsertRowid);
+      db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(fu, new Date().toISOString(), l.id);
+    } else db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
     return getColdLead(offerId, l.id);
   })();
 }
