@@ -134,7 +134,8 @@ export function toLeads(headers, rows, mapping, today) {
     if (!r.some((c) => String(c ?? '').trim())) continue;
     const lead = { extra: [], history: [] };
     headers.forEach((h, i) => {
-      const v = String(r[i] ?? '').trim();
+      // Excel/Sheets exports often write whole numbers as "8.0"
+      const v = String(r[i] ?? '').trim().replace(/^(-?\d+)\.0+$/, '$1');
       const f = mapping[i];
       if (!v || f === 'skip') return;
       if (f === 'extra') lead.extra.push([h || `Column ${i + 1}`, v]);

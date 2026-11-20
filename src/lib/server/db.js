@@ -609,7 +609,7 @@ export function guessOutcome(text) {
   const t = String(text || '').toLowerCase().trim();
   if (!t) return null;
   if (/wrong|disconn|invalid|not in service|bad n/.test(t)) return 'wrong_no';
-  if (/not int|\bni\b|no thanks|not keen|hung up|\bdnc\b|do not call/.test(t)) return 'not_interested';
+  if (/not int|\bni\b|no thanks|not keen|hung up|\bdnc\b|do not call|happy with|already (paid|have|has|got|using|use)|not looking|no need|don'?t need/.test(t)) return 'not_interested';
   if (/book/.test(t)) return 'booked';
   if (/call ?back|\bcb\b|follow|later|busy/.test(t)) return 'callback';
   if (/no ?ans|\bna\b|n\/a|\bvm\b|voice ?mail|no pick|rang out|left msg|left message|\bnr\b/.test(t)) return 'no_answer';

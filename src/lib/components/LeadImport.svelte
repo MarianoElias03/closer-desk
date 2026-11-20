@@ -17,9 +17,13 @@
   let fileName = $state('');
 
   function load(rows) {
-    if (rows.length < 2) throw new Error('Need a header row and at least one lead');
-    const headers = rows[0].map((h) => String(h ?? '').trim());
-    table = { headers, rows: rows.slice(1) };
+    // the header is the fullest of the first few rows (sheets often have a stray title row above it)
+    const filled = (r) => r.filter((c) => String(c ?? '').trim()).length;
+    let at = 0;
+    rows.slice(0, 10).forEach((r, i) => filled(r) > filled(rows[at]) && (at = i));
+    if (rows.length - at < 2) throw new Error('Need a header row and at least one lead');
+    const headers = rows[at].map((h) => String(h ?? '').trim());
+    table = { headers, rows: rows.slice(at + 1) };
     mapping = headers.map(guessField);
   }
 
