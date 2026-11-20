@@ -14,7 +14,8 @@
 
   const count = (key) => data.leads.filter((l) => FILTERS.find((f) => f.key === key).test(l, data.today)).length;
   const due = $derived(data.leads.filter((l) => isDue(l, data.today)).length);
-  const dialledToday = $derived(data.leads.reduce((n, l) => n + l.dials.filter((d) => d.date === data.today).length, 0));
+  // leads with any call, SMS or email today, each counted once (opt-out changes aren't contact)
+  const contactedToday = $derived(data.leads.filter((l) => l.dials.some((d) => d.date === data.today && !(d.label && d.date))).length);
   const cash = $derived(data.leads.reduce((n, l) => n + (l.stage === 'call_closed' ? l.call?.cash || 0 : 0), 0));
 </script>
 
@@ -35,7 +36,7 @@
   <section class="panel strip">
     <Stat label="To dial today" value={count('queue')} />
     <Stat label="Callbacks due" value={due} tone="yellow" />
-    <Stat label="Dialled from the list today" value={dialledToday} />
+    <Stat label="Contacted from the list today" value={contactedToday} />
     <Stat label="Booked" value={count('booked')} tone="blue" />
     <Stat label="Closed" value={count('closed')} tone="green" hint={cash ? `${money(cash)} cash` : null} />
     <Stat label="On the list" value={data.leads.length} />
