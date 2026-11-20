@@ -70,7 +70,7 @@
     <ol class="hist" aria-label="Past dials">
       {#each lead.dials as d}
         <li class="t-{entryType(d.outcome)?.tone || 'none'}">
-          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${entryLabel(d.outcome, d.channel)}` : d.label}{d.note ? `, "${d.note}"` : ''}
+          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${entryLabel(d.outcome, d.channel)}` : d.label}{d.subject ? `, "${d.subject}"` : d.note ? `, "${d.note.length > 70 ? d.note.slice(0, 70).trim() + '...' : d.note}"` : ''}
         </li>
       {/each}
     </ol>

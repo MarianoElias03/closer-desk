@@ -73,7 +73,9 @@ const full = (l) => ({
     channel: d.channel,
     outcome: d.outcome,
     label: d.label || entryLabel(d.outcome, d.channel),
+    ...(d.subject ? { subject: d.subject } : {}),
     note: d.note,
+    ...(d.extId ? { external_id: d.extId } : {}),
     counted_on_dialling: d.counted
   }))
 });
@@ -174,6 +176,44 @@ const matchSchema = {
     business: { type: 'string', description: 'Exact business name, or a unique part of it' }
   }
 };
+
+const contactProps = {
+  channel: { type: 'string', enum: CHANNELS, default: 'call' },
+  outcome: {
+    type: 'string',
+    enum: [...ENTRY_TYPES, 'note'],
+    description:
+      'no_answer (or no reply), booked, not_interested, callback (follow up), wrong_no (or bounced), inbound (the lead contacted the user, e.g. an email reply), note (the user just sent something)'
+  },
+  subject: { type: 'string', description: 'Email subject line' },
+  body: { type: 'string', description: 'The note, or the full email / text body. Keep line breaks. Up to 20,000 characters.' },
+  note: { type: 'string', description: 'Same as body' },
+  date: { type: 'string', description: 'YYYY-MM-DD, defaults to today' },
+  time: { type: 'string', description: 'HH:mm 24h in the business timezone, defaults to now' },
+  external_id: {
+    type: 'string',
+    description: 'The message id from the mail or SMS system. Logging the same id on the same lead twice is skipped, so re-importing is safe.'
+  },
+  count_on_dialling: { type: 'boolean', default: false }
+};
+
+function logOne(offerId, a) {
+  const l = findLead(offerId, a.lead);
+  const now = wallClock(new Date().toISOString(), tz());
+  const updated = addLeadEntry(offerId, l.id, {
+    date: a.date || now.date,
+    time: a.time || (a.date && a.date !== now.date ? '12:00' : now.time),
+    channel: a.channel || 'call',
+    outcome: a.outcome === 'note' ? '' : a.outcome,
+    subject: a.subject || '',
+    note: a.body ?? a.note ?? '',
+    extId: a.external_id || null,
+    counted: !!a.count_on_dialling
+  });
+  if (updated.duplicateOf) return { lead: brief(updated), duplicate: true, entry_id: updated.duplicateOf };
+  const e = updated.dials.reduce((m, d) => (d.id > m.id ? d : m));
+  return { lead: brief(updated), logged: { entry_id: e.id, channel: e.channel, label: entryLabel(e.outcome, e.channel), subject: e.subject || undefined, counted_on_dialling: e.counted } };
+}
 
 export const TOOLS = [
   {
@@ -363,40 +403,44 @@ export const TOOLS = [
   {
     name: 'log_contact',
     description:
-      'Add an entry to a lead\'s contact history: a call, SMS or email, with what happened. It shows as the lead\'s last contact. It only counts on the Dialling numbers when it is a call you made AND count_on_dialling is true; leave that false unless the user says so.',
+      "Add an entry to a lead's contact history: a call, SMS or email. For emails pass subject and the full body, and external_id (the message id) so re-imports don't duplicate. A reply from the lead is outcome inbound. It shows as the lead's last contact. It only counts on the Dialling numbers when it is a call the user made AND count_on_dialling is true; leave that false unless told.",
+    inputSchema: { type: 'object', properties: { ...offerArg, lead: matchSchema, ...contactProps }, required: ['lead', 'outcome'] },
+    write: true,
+    run(a) {
+      const o = pickOffer(a.offer);
+      return { offer: o.name, ...logOne(o.id, a) };
+    }
+  },
+  {
+    name: 'log_contacts',
+    description:
+      'Log many history entries at once, e.g. a batch of sent emails and their replies across leads. Same fields as log_contact per item. Items with an external_id already on that lead are skipped as duplicates; items that fail are reported and the rest still save.',
     inputSchema: {
       type: 'object',
       properties: {
         ...offerArg,
-        lead: matchSchema,
-        channel: { type: 'string', enum: CHANNELS, default: 'call' },
-        outcome: {
-          type: 'string',
-          enum: [...ENTRY_TYPES, 'note'],
-          description: 'no_answer (or no reply), booked, not_interested, callback (follow up), wrong_no (or bounced), inbound (they contacted you), note (just a note, e.g. sent a text)'
-        },
-        note: { type: 'string' },
-        date: { type: 'string', description: 'YYYY-MM-DD, defaults to today' },
-        time: { type: 'string', description: 'HH:mm 24h in the business timezone, defaults to now' },
-        count_on_dialling: { type: 'boolean', default: false }
+        entries: { type: 'array', maxItems: 500, items: { type: 'object', properties: { lead: matchSchema, ...contactProps }, required: ['lead', 'outcome'] } }
       },
-      required: ['lead', 'outcome']
+      required: ['entries']
     },
     write: true,
     run(a) {
       const o = pickOffer(a.offer);
-      const l = findLead(o.id, a.lead);
-      const now = wallClock(new Date().toISOString(), tz());
-      const updated = addLeadEntry(o.id, l.id, {
-        date: a.date || now.date,
-        time: a.time || (a.date && a.date !== now.date ? '12:00' : now.time),
-        channel: a.channel || 'call',
-        outcome: a.outcome === 'note' ? '' : a.outcome,
-        note: a.note || '',
-        counted: !!a.count_on_dialling
+      const results = (a.entries || []).map((e, i) => {
+        try {
+          const r = logOne(o.id, e);
+          return { item: i, lead_id: r.lead.id, business: r.lead.business, ...(r.duplicate ? { duplicate: true } : { entry_id: r.logged.entry_id }) };
+        } catch (err) {
+          return { item: i, error: err.message };
+        }
       });
-      const e = updated.dials.reduce((m, d) => (d.id > m.id ? d : m));
-      return { offer: o.name, lead: brief(updated), logged: { entry_id: e.id, channel: e.channel, label: entryLabel(e.outcome, e.channel), counted_on_dialling: e.counted } };
+      return {
+        offer: o.name,
+        added: results.filter((r) => r.entry_id).length,
+        duplicates: results.filter((r) => r.duplicate).length,
+        failed: results.filter((r) => r.error).length,
+        results
+      };
     }
   },
   {

@@ -1,5 +1,5 @@
 <script>
-  import { fly } from 'svelte/transition';
+  import { fly, fade } from 'svelte/transition';
   import { goto, invalidateAll, beforeNavigate } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
   import LeadSummary from '$lib/components/LeadSummary.svelte';
@@ -18,18 +18,45 @@
   const href = (id) => `/leads/${id}${query}`;
 
   // ---- editable details ----
-  const FIELDS = ['business', 'contact', 'phone', 'email', 'suburb', 'category', 'score', 'followUp', 'notes'];
+  // notes aren't edited here: what happened goes in the History
+  const FIELDS = ['business', 'contact', 'phone', 'email', 'suburb', 'category', 'score', 'followUp'];
   const fromLead = (l) => ({ ...Object.fromEntries(FIELDS.map((k) => [k, l[k] ?? ''])) });
   let form = $state({});
   let formFor = $state(null);
+  let editing = $state(false);
   $effect(() => {
     if (lead.id !== formFor) {
       formFor = lead.id;
       form = fromLead(lead);
+      editing = false;
       pickCall = '';
     }
   });
-  const dirty = $derived(formFor === lead.id && FIELDS.some((k) => String(form[k] ?? '') !== String(lead[k] ?? '')));
+  const dirty = $derived(editing && formFor === lead.id && FIELDS.some((k) => String(form[k] ?? '') !== String(lead[k] ?? '')));
+  // a booked call sets the follow-up date itself
+  const callSetsDate = $derived(!!lead.call && !lead.call.cancelled);
+  function startEdit() {
+    form = fromLead(lead);
+    editing = true;
+  }
+  function cancelEdit() {
+    form = fromLead(lead);
+    editing = false;
+  }
+  const nextStep = $derived.by(() => {
+    if (callSetsDate) {
+      const past = new Date(lead.call.start) < new Date();
+      return { label: past ? 'Booked call was' : 'Booked call', text: when(lead.call.start), tone: 'blue' };
+    }
+    if (lead.followUp) {
+      const label = lead.stage === 'callback' ? 'Callback' : lead.stage === 'booked' ? 'Booked for' : 'Follow up';
+      const due = lead.followUp <= data.today;
+      return { label, text: dayLong(lead.followUp) + (lead.followUp === data.today ? ' (today)' : due ? ' (overdue)' : ''), tone: due ? 'yellow' : 'none' };
+    }
+    if (lead.stage === 'booked') return { label: 'Booked', text: 'Waiting for the call to show up on your calendar', tone: 'none' };
+    return null;
+  });
+  const dayLong = (d) => new Intl.DateTimeFormat('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(d + 'T00:00:00Z'));
   let saving = $state(false);
 
   async function api(path, method, body) {
@@ -41,9 +68,11 @@
   async function save() {
     saving = true;
     try {
-      await api(`/api/leads/${lead.id}`, 'PATCH', form);
+      const { followUp, ...rest } = form;
+      await api(`/api/leads/${lead.id}`, 'PATCH', callSetsDate ? rest : form);
       toast(`${leadName({ ...lead, ...form })} saved`);
       await invalidateAll();
+      editing = false;
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -144,29 +173,60 @@
       <section class="panel details">
         <div class="shead">
           <h2>Details</h2>
-          {#if dirty}<span class="chip t-yellow"><span class="dot"></span>Unsaved</span>{/if}
+          {#if editing}
+            {#if dirty}<span class="chip t-yellow"><span class="dot"></span>Unsaved</span>{/if}
+          {:else}
+            <button class="btn small" onclick={startEdit}><Icon name="edit" size={14} />Edit</button>
+          {/if}
         </div>
-        <form onsubmit={(e) => (e.preventDefault(), save())}>
-          <label class="field">Business<input bind:value={form.business} /></label>
-          <div class="two">
-            <label class="field">Contact name<input bind:value={form.contact} /></label>
-            <label class="field">Mobile<input bind:value={form.phone} inputmode="tel" /></label>
+
+        {#if nextStep}
+          <div class="next t-{nextStep.tone}">
+            <Icon name={callSetsDate ? 'calendar' : 'clock'} size={16} />
+            <span><span class="k">{nextStep.label}</span><strong>{nextStep.text}</strong></span>
           </div>
-          <label class="field">Email<input bind:value={form.email} type="email" /></label>
-          <div class="two">
-            <label class="field">Suburb<input bind:value={form.suburb} /></label>
-            <label class="field">Category<input bind:value={form.category} /></label>
-          </div>
-          <div class="two">
-            <label class="field">Prospect score<input bind:value={form.score} inputmode="decimal" /></label>
-            <label class="field">Follow-up date<input bind:value={form.followUp} type="date" /></label>
-          </div>
-          <label class="field">Notes<textarea bind:value={form.notes} rows="4" placeholder="Who you spoke to, objections, best time to call"></textarea></label>
-          <div class="acts">
-            {#if dirty}<button type="button" class="btn small ghost" onclick={() => (form = fromLead(lead))}>Undo changes</button>{/if}
-            <button class="btn small primary" disabled={!dirty || saving}><Icon name="check" size={14} />{saving ? 'Saving' : 'Save'}</button>
-          </div>
-        </form>
+        {/if}
+
+        {#if editing}
+          <form onsubmit={(e) => (e.preventDefault(), save())} in:fade={{ duration: 140 }}>
+            <label class="field">Business<input bind:value={form.business} /></label>
+            <div class="two">
+              <label class="field">Contact name<input bind:value={form.contact} /></label>
+              <label class="field">Mobile<input bind:value={form.phone} inputmode="tel" /></label>
+            </div>
+            <label class="field">Email<input bind:value={form.email} type="email" /></label>
+            <div class="two">
+              <label class="field">Suburb<input bind:value={form.suburb} /></label>
+              <label class="field">Category<input bind:value={form.category} /></label>
+            </div>
+            <div class="two">
+              <label class="field">Prospect score<input bind:value={form.score} inputmode="decimal" /></label>
+              {#if callSetsDate}
+                <div class="field ro">Follow-up date<span class="faint">Set by the booked call</span></div>
+              {:else}
+                <label class="field">Follow-up date<input bind:value={form.followUp} type="date" /></label>
+              {/if}
+            </div>
+            <div class="acts">
+              <button type="button" class="btn small ghost" onclick={cancelEdit}>Cancel</button>
+              <button class="btn small primary" disabled={!dirty || saving}><Icon name="check" size={14} />{saving ? 'Saving' : 'Save'}</button>
+            </div>
+          </form>
+        {:else}
+          <dl class="info" in:fade={{ duration: 140 }}>
+            {#each [['Business', lead.business], ['Contact', lead.contact], ['Mobile', lead.phone], ['Email', lead.email], ['Suburb', lead.suburb], ['Category', lead.category], ['Prospect score', lead.score]] as [k, v]}
+              <div>
+                <dt>{k}</dt>
+                <dd>
+                  {#if v == null || v === ''}<span class="faint">Not set</span>
+                  {:else if k === 'Mobile'}<a href="tel:{String(v).replace(/[^\d+]/g, '')}">{v}</a>
+                  {:else if k === 'Email'}<a href="mailto:{v}">{v}</a>
+                  {:else}{v}{/if}
+                </dd>
+              </div>
+            {/each}
+          </dl>
+        {/if}
       </section>
 
       {#if lead.extra.length}
@@ -303,6 +363,61 @@
   form {
     display: grid;
     gap: 10px;
+  }
+  .next {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 14px;
+    border-radius: 12px;
+    background: var(--tone-soft);
+    border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent);
+    color: var(--ink-2);
+  }
+  .next.t-none {
+    background: var(--surface);
+    border-color: var(--line-2);
+  }
+  .next > span {
+    display: grid;
+  }
+  .next strong {
+    color: var(--ink);
+    font-size: 14.5px;
+  }
+  .info {
+    margin: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px 16px;
+  }
+  .info div:nth-child(-n + 1),
+  .info div:nth-child(4) {
+    grid-column: 1 / -1;
+  }
+  .info dt {
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .info dd {
+    margin: 2px 0 0;
+    font-size: 14.5px;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .info a {
+    color: var(--ink);
+  }
+  .ro {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+  }
+  .ro .faint {
+    font-weight: 400;
+    font-size: 13px;
+    padding-top: 10px;
   }
   .two {
     display: grid;

@@ -599,6 +599,11 @@ CREATE INDEX IF NOT EXISTS lead_dials_lead ON lead_dials(lead_id);
 if (!hasColumn('lead_dials', 'prev_follow_up')) db.exec('ALTER TABLE lead_dials ADD COLUMN prev_follow_up TEXT');
 // how the contact happened: everything before this column existed was a phone call
 if (!hasColumn('lead_dials', 'channel')) db.exec("ALTER TABLE lead_dials ADD COLUMN channel TEXT NOT NULL DEFAULT 'call'");
+// emails keep a subject line (the note is the body), and an id from the mail system so importing
+// the same message twice doesn't add it twice
+if (!hasColumn('lead_dials', 'subject')) db.exec("ALTER TABLE lead_dials ADD COLUMN subject TEXT NOT NULL DEFAULT ''");
+if (!hasColumn('lead_dials', 'ext_id')) db.exec('ALTER TABLE lead_dials ADD COLUMN ext_id TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS lead_dials_ext ON lead_dials(lead_id, ext_id) WHERE ext_id IS NOT NULL');
 
 export const DIAL_OUTCOMES = SDR_FIELDS;
 
@@ -680,7 +685,7 @@ function shapeColdLead(r, dials) {
   };
 }
 
-const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, channel: d.channel || 'call', label: d.label, note: d.note, counted: !!d.counted, at: d.at });
+const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, channel: d.channel || 'call', subject: d.subject || '', label: d.label, note: d.note, counted: !!d.counted, at: d.at, extId: d.ext_id || null });
 
 export function getColdLead(offerId, id) {
   const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
@@ -722,7 +727,14 @@ export function updateColdLead(offerId, id, patch) {
     const cid = patch.callId ? String(patch.callId) : null;
     if (cid && !db.prepare('SELECT 1 FROM calls WHERE id = ?').get(cid)) throw new Error('That call is gone');
     f.call_id = cid;
-    if (cid) db.prepare('UPDATE calls SET offer_id = ? WHERE id = ?').run(offerId, cid);
+    if (cid) {
+      db.prepare('UPDATE calls SET offer_id = ? WHERE id = ?').run(offerId, cid);
+      f.follow_up = dayKey(db.prepare('SELECT start FROM calls WHERE id = ?').get(cid).start, getSettings().timezone);
+    } else {
+      // unlinking: drop the follow-up date that came from that call
+      const was = db.prepare('SELECT l.follow_up, c.start FROM leads l LEFT JOIN calls c ON c.id = l.call_id WHERE l.id = ?').get(Number(id));
+      if (was?.start && was.follow_up === dayKey(was.start, getSettings().timezone)) f.follow_up = null;
+    }
   }
   const cur = getColdLead(offerId, id);
   if (!cur) return null;
@@ -846,6 +858,33 @@ export function importColdLeads(offerId, rows) {
  * land on any offer; once it matches a lead it is moved onto that lead's offer.
  */
 export function linkLeadCalls() {
+  const n = matchLeadCalls();
+  syncCallFollowUps();
+  return n;
+}
+
+/**
+ * A booked lead's follow-up date is its call's date, so the list, the lead page and sorting all show
+ * when the call is. Kept in step on every calendar sync, so a rescheduled call moves it too.
+ */
+export function syncCallFollowUps() {
+  const tz = getSettings().timezone;
+  const rows = db
+    .prepare("SELECT l.id, l.follow_up, c.start FROM leads l JOIN calls c ON c.id = l.call_id WHERE c.status != 'cancelled'")
+    .all();
+  const set = db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?');
+  let n = 0;
+  for (const r of rows) {
+    const day = dayKey(r.start, tz);
+    if (r.follow_up !== day) {
+      set.run(day, new Date().toISOString(), r.id);
+      n++;
+    }
+  }
+  return n;
+}
+
+function matchLeadCalls() {
   const leads = db
     .prepare(
       `SELECT l.*, (SELECT MIN(date) FROM lead_dials d WHERE d.lead_id = l.id AND d.outcome = 'booked') AS booked_on
@@ -917,7 +956,17 @@ function entryFields(e) {
   const counted = !!e.counted && channel === 'call' && outcome !== 'inbound';
   if (counted && !outcome) throw new Error('Pick an outcome to count it on Dialling');
   const at = atFrom(e.date, e.time);
-  return { date: dayKey(at, getSettings().timezone), at, outcome, channel, counted, note: String(e.note ?? '').slice(0, 1000) };
+  return {
+    date: dayKey(at, getSettings().timezone),
+    at,
+    outcome,
+    channel,
+    counted,
+    subject: String(e.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
+    // long enough for a whole email body
+    note: String(e.note ?? '').replace(/\r\n/g, '\n').slice(0, 20000),
+    extId: e.extId ? String(e.extId).trim().slice(0, 200) : null
+  };
 }
 
 export function addLeadEntry(offerId, leadId, e) {
@@ -925,8 +974,12 @@ export function addLeadEntry(offerId, leadId, e) {
   return db.transaction(() => {
     const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, note, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)').run(
-      l.id, offerId, f.date, f.outcome, f.channel, f.note, f.counted ? 1 : 0, f.at
+    if (f.extId) {
+      const seen = db.prepare('SELECT id FROM lead_dials WHERE lead_id = ? AND ext_id = ?').get(l.id, f.extId);
+      if (seen) return { ...getColdLead(offerId, l.id), duplicateOf: seen.id };
+    }
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      l.id, offerId, f.date, f.outcome, f.channel, f.subject, f.note, f.extId, f.counted ? 1 : 0, f.at
     );
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
     db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
@@ -939,11 +992,11 @@ export function updateLeadEntry(offerId, leadId, dialId, e) {
     const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
     if (!d) return null;
     const was = d.date ? wallClock(d.at, getSettings().timezone) : {};
-    const f = entryFields({ ...was, outcome: d.outcome, channel: d.channel, note: d.note, counted: !!d.counted, ...e });
+    const f = entryFields({ ...was, outcome: d.outcome, channel: d.channel, subject: d.subject, note: d.note, extId: d.ext_id, counted: !!d.counted, ...e });
     if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
-    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, channel = ?, note = ?, counted = ? WHERE id = ?').run(
-      f.date, f.at, f.outcome, f.channel, f.note, f.counted ? 1 : 0, d.id
+    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, channel = ?, subject = ?, note = ?, counted = ? WHERE id = ?').run(
+      f.date, f.at, f.outcome, f.channel, f.subject, f.note, f.counted ? 1 : 0, d.id
     );
     return getColdLead(offerId, leadId);
   })();

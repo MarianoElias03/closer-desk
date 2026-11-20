@@ -30,7 +30,7 @@
 
   function blankDraft(channel = 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', note: '', counted: false };
+    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', subject: '', note: '', counted: false };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -67,13 +67,28 @@
   function startEdit(d) {
     editing = d.id;
     const w = d.date ? wallClock(d.at, tz) : { date: today, time: '' };
-    form = { ...w, channel: d.channel, outcome: d.outcome || '', note: d.note, counted: d.counted };
+    form = { ...w, channel: d.channel, outcome: d.outcome || '', subject: d.subject, note: d.note, counted: d.counted };
   }
   async function save(e, d) {
     e.preventDefault();
     const body = { ...form, counted: countable(form) && form.counted };
     if (await send(`/api/leads/${lead.id}/dials/${d.id}`, 'PATCH', body, 'Entry updated')) editing = null;
   }
+  // the note box grows with what you type (field-sizing where the browser has it, this otherwise)
+  function grow(el) {
+    const fit = () => {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight + 2, window.innerHeight * 0.6) + 'px';
+    };
+    queueMicrotask(fit);
+    el.addEventListener('input', fit);
+    return { destroy: () => el.removeEventListener('input', fit) };
+  }
+  // long notes and email bodies start folded
+  let unfolded = $state([]);
+  const long = (d) => d.note.length > 260 || d.note.split('\n').length > 4;
+  const flip = (id) => (unfolded = unfolded.includes(id) ? unfolded.filter((x) => x !== id) : [...unfolded, id]);
+
   async function remove(d) {
     if (d.counted && !confirm(`Remove this ${outcome(d.outcome)?.label.toLowerCase()}? It comes off that day's Dialling numbers.`)) return;
     send(`/api/leads/${lead.id}/dials/${d.id}`, 'DELETE', null, 'Entry removed');
@@ -96,7 +111,17 @@
       <option value="">{f.channel === 'call' ? 'Other (note only)' : f.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</option>
     </select>
   </label>
-  <label class="field wide">Note<input bind:value={f.note} placeholder={f.channel === 'call' ? 'Spoke to his wife, owner back Friday...' : 'What you sent or what they said'} /></label>
+  {#if f.channel === 'email'}
+    <label class="field wide">Subject<input bind:value={f.subject} placeholder="Subject line" /></label>
+  {/if}
+  <label class="field wide">{f.channel === 'email' ? 'Email' : 'Note'}
+    <textarea
+      use:grow
+      rows="2"
+      bind:value={f.note}
+      placeholder={f.channel === 'call' ? 'Who you spoke to, what they said, when to call back' : f.channel === 'sms' ? 'The text you sent or got' : 'The body of the email'}
+    ></textarea>
+  </label>
   {#if countable(f)}
     <label class="check"><input type="checkbox" bind:checked={f.counted} />Count it on Dialling for that day</label>
   {:else}
@@ -151,8 +176,17 @@
             <div class="what">
               <span class="when"><Icon name={channelOf(d.channel).icon} size={12} />{channelOf(d.channel).label}, {d.date ? whenLabel(d.at, tz) : 'date not recorded'}</span>
               <span>
-                <strong>{d.outcome || d.channel === 'call' ? entryLabel(d.outcome, d.channel) : d.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}{#if d.note}<span class="muted">, "{d.note}"</span>{/if}
+                <strong>{entryLabel(d.outcome, d.channel)}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}
               </span>
+              {#if d.subject}<span class="subj">{d.subject}</span>{/if}
+              {#if d.note}
+                <div class="body" class:email={d.channel === 'email'} class:folded={long(d) && !unfolded.includes(d.id)}>{d.note}</div>
+                {#if long(d)}
+                  <button class="more" onclick={() => flip(d.id)}>
+                    {unfolded.includes(d.id) ? 'Show less' : d.channel === 'email' ? 'Show full email' : 'Show all'}
+                  </button>
+                {/if}
+              {/if}
               {#if d.counted}<span class="tag faint">in Dialling numbers</span>{/if}
             </div>
             <div class="row-btns">
@@ -246,6 +280,54 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
+  }
+  .entry-form .field.wide {
+    grid-column: 1 / -1;
+  }
+  .entry-form .field textarea,
+  .entry-form .field input {
+    width: 100%;
+    min-width: 0;
+  }
+  textarea {
+    resize: vertical;
+    min-height: 60px;
+    max-height: 60vh;
+    field-sizing: content;
+    line-height: 1.45;
+  }
+  .subj {
+    font-weight: 700;
+    color: var(--ink);
+    margin-top: 2px;
+  }
+  .body {
+    margin-top: 4px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--ink-2);
+    font-size: 13.5px;
+    line-height: 1.5;
+  }
+  .body.email {
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--line-2);
+  }
+  .body.folded {
+    max-height: 6.2em;
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  }
+  .more {
+    justify-self: start;
+    border: 0;
+    background: transparent;
+    padding: 2px 0;
+    font-size: 12.5px;
+    font-weight: 700;
+    color: var(--blue);
   }
   .field select {
     height: 40px;
