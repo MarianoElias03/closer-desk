@@ -77,6 +77,7 @@
     <div class="contact">
       {#if call.phone}<a class="btn small" href="tel:{call.phone.replace(/\s/g, '')}"><Icon name="phone" size={15} />{call.phone}</a>{/if}
       {#if call.email}<a class="btn small" href="mailto:{call.email}"><Icon name="mail" size={15} />{call.email}</a>{/if}
+      {#if call.leadId}<a class="btn small" href="/leads?lead={call.leadId}"><Icon name="users" size={15} />Open lead</a>{/if}
       {#if call.joinUrl && !isPast}<a class="btn small primary" href={call.joinUrl} target="_blank" rel="noopener"><Icon name="video" size={15} />Join call</a>{/if}
     </div>
 

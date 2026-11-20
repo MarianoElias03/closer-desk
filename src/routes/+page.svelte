@@ -109,7 +109,10 @@
         <h2>Dial session</h2>
         <p class="muted small">Tap after every dial. Keys 1 to 5 work too, Z undoes.</p>
       </div>
-      <button class="btn small ghost" onclick={undo} disabled={!history.length}><Icon name="undo" size={15} />Undo</button>
+      <div class="dial-acts">
+        {#if data.leadCount}<a class="btn small" href="/leads"><Icon name="users" size={15} />Dial from your list</a>{/if}
+        <button class="btn small ghost" onclick={undo} disabled={!history.length}><Icon name="undo" size={15} />Undo</button>
+      </div>
     </div>
 
     <div class="pads">
@@ -220,6 +223,11 @@
 {/if}
 
 <style>
+  .dial-acts {
+    display: flex;
+    gap: 8px;
+    align-items: start;
+  }
   .top {
     display: flex;
     flex-wrap: wrap;

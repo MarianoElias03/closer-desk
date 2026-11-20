@@ -1,4 +1,4 @@
-import { sdrDay, sdrRange, closeRange, dmRange, dmDay, dmLeads, callsRange, getSettings, monthMeta, unlinkedRecordings } from '$lib/server/db.js';
+import { sdrDay, sdrRange, closeRange, dmRange, dmDay, dmLeads, callsRange, getSettings, monthMeta, unlinkedRecordings, coldLeadCount } from '$lib/server/db.js';
 import { dayKey, dayStartIso, addDays, monthBounds } from '$lib/time.js';
 
 export function load({ locals }) {
@@ -22,6 +22,7 @@ export function load({ locals }) {
     closeMonth: closeRange(o, first, last),
     dmMonth: dmRange(o, first, last),
     meta: monthMeta(o, month),
-    recordings: unlinkedRecordings()
+    recordings: unlinkedRecordings(),
+    leadCount: coldLeadCount(o)
   };
 }

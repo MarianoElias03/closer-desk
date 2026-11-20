@@ -60,7 +60,8 @@
     goto(u, { replaceState: true, noScroll: true, keepFocus: true });
   }
 
-  let openId = $state(null);
+  // /calls?open=<id> (from a lead's booked call) opens that call's drawer
+  let openId = $state(page.url.searchParams.get('open'));
   const openCall = $derived(openId ? data.calls.find((c) => c.id === openId) : null);
 
   // add a call that is not on the calendar

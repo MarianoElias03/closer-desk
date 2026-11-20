@@ -310,7 +310,8 @@ export function setMonthMeta(offerId, month, kind, days) {
 
 const CALL_SELECT = `
   SELECT c.*, f.title AS f_title, f.url AS f_url, f.share_url AS f_share_url, f.summary AS f_summary,
-         f.action_items AS f_action_items, f.start AS f_start
+         f.action_items AS f_action_items, f.start AS f_start,
+         (SELECT l.id FROM leads l WHERE l.call_id = c.id LIMIT 1) AS lead_id
   FROM calls c LEFT JOIN fathom f ON f.recording_id = c.fathom_id`;
 
 export function callsRange(offerId, fromIso, toIso) {
@@ -355,6 +356,7 @@ function shapeCall(r) {
     notes: r.notes,
     source: r.source,
     offerId: r.offer_id,
+    leadId: r.lead_id,
     fathom
   };
 }
@@ -549,4 +551,333 @@ export function deleteLead(offerId, id) {
     if (r.outcome) bumpDm(offerId, r.outcome_on, r.outcome, -1);
     db.prepare('DELETE FROM dm_leads WHERE id = ?').run(r.id);
   })();
+}
+
+// ---------- Cold-call leads ----------
+// One row per business on the call list, scoped to an offer. Every dial logged against a lead is a
+// row in lead_dials and adds 1 to that day's SDR tally (same per-dial counting as the sheet), so
+// undoing a dial or deleting a lead takes it back off. Call 1/2/3 history that came in on an import
+// is kept on the lead for reference but never counted: those dials were already tallied by hand.
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS leads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  offer_id INTEGER NOT NULL REFERENCES offers(id) ON DELETE CASCADE,
+  business TEXT NOT NULL DEFAULT '',
+  contact TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  phone_key TEXT,
+  email TEXT NOT NULL DEFAULT '',
+  suburb TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT '',
+  score REAL,
+  follow_up TEXT,
+  notes TEXT NOT NULL DEFAULT '',
+  extra TEXT NOT NULL DEFAULT '[]',
+  call_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS leads_offer ON leads(offer_id);
+CREATE INDEX IF NOT EXISTS leads_phone ON leads(phone_key);
+CREATE TABLE IF NOT EXISTS lead_dials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  offer_id INTEGER NOT NULL,
+  date TEXT,
+  outcome TEXT,
+  label TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  counted INTEGER NOT NULL DEFAULT 1,
+  prev_follow_up TEXT,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS lead_dials_lead ON lead_dials(lead_id);
+`);
+if (!hasColumn('lead_dials', 'prev_follow_up')) db.exec('ALTER TABLE lead_dials ADD COLUMN prev_follow_up TEXT');
+
+export const DIAL_OUTCOMES = SDR_FIELDS;
+
+export function phoneKey(p) {
+  let d = String(p || '').replace(/\D/g, '');
+  if (d.startsWith('61')) d = '0' + d.slice(2);
+  return d.length >= 8 ? d.slice(-9) : null;
+}
+
+// Words people write in a Call 1/2/3 cell, mapped to an outcome. Anything else stays as plain text.
+export function guessOutcome(text) {
+  const t = String(text || '').toLowerCase().trim();
+  if (!t) return null;
+  if (/wrong|disconn|invalid|not in service|bad n/.test(t)) return 'wrong_no';
+  if (/not int|\bni\b|no thanks|not keen|hung up|\bdnc\b|do not call/.test(t)) return 'not_interested';
+  if (/book/.test(t)) return 'booked';
+  if (/call ?back|\bcb\b|follow|later|busy/.test(t)) return 'callback';
+  if (/no ?ans|\bna\b|n\/a|\bvm\b|voice ?mail|no pick|rang out|left msg|left message|\bnr\b/.test(t)) return 'no_answer';
+  return null;
+}
+
+function bumpSdr(offerId, date, key, delta) {
+  const cur = sdrDay(offerId, date) || Object.fromEntries(SDR_FIELDS.map((k) => [k, 0]));
+  cur[key] = Math.max(0, (cur[key] || 0) + delta);
+  upsertSdr(offerId, date, cur);
+}
+
+const LEAD_TEXT = { business: 120, contact: 120, phone: 40, email: 160, suburb: 80, category: 80 };
+
+function leadFields(o) {
+  const f = {};
+  for (const [k, max] of Object.entries(LEAD_TEXT)) if (k in o) f[k] = String(o[k] ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
+  if ('phone' in f) f.phone_key = phoneKey(f.phone);
+  if ('score' in o) {
+    const n = parseFloat(String(o.score ?? '').replace(/[^\d.-]/g, ''));
+    f.score = Number.isFinite(n) ? n : null;
+  }
+  if ('followUp' in o) f.follow_up = /^\d{4}-\d{2}-\d{2}$/.test(o.followUp || '') ? o.followUp : null;
+  if ('notes' in o) f.notes = String(o.notes ?? '').slice(0, 4000);
+  if ('extra' in o) {
+    const list = (Array.isArray(o.extra) ? o.extra : [])
+      .map(([k, v]) => [String(k).trim().slice(0, 60), String(v ?? '').trim().slice(0, 1000)])
+      .filter(([k, v]) => k && v);
+    f.extra = JSON.stringify(list.slice(0, 40));
+  }
+  return f;
+}
+
+const LEAD_SELECT = `
+  SELECT l.*, c.start AS c_start, c.outcome AS c_outcome, c.cash AS c_cash, c.status AS c_status, c.title AS c_title, c.offer_id AS c_offer
+  FROM leads l LEFT JOIN calls c ON c.id = l.call_id`;
+
+function shapeColdLead(r, dials) {
+  if (!r) return null;
+  const counted = dials.filter((d) => d.outcome);
+  const last = counted.at(-1) || null;
+  const call = r.call_id && r.c_start ? { id: r.call_id, start: r.c_start, outcome: r.c_outcome, cash: r.c_cash, title: r.c_title, cancelled: r.c_status === 'cancelled' } : null;
+  let stage = last?.outcome || 'new';
+  if (call && !call.cancelled) stage = call.outcome && call.outcome !== 'pending' ? 'call_' + call.outcome : 'booked';
+  return {
+    id: r.id,
+    business: r.business,
+    contact: r.contact,
+    phone: r.phone,
+    email: r.email,
+    suburb: r.suburb,
+    category: r.category,
+    score: r.score,
+    followUp: r.follow_up,
+    notes: r.notes,
+    extra: JSON.parse(r.extra || '[]'),
+    call,
+    stage,
+    dials,
+    attempts: dials.length,
+    lastDialOn: dials.filter((d) => d.date).at(-1)?.date || null,
+    updatedAt: r.updated_at
+  };
+}
+
+const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, label: d.label, note: d.note, counted: !!d.counted, at: d.at });
+
+export function getColdLead(offerId, id) {
+  const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
+  if (!r) return null;
+  return shapeColdLead(r, db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? ORDER BY id').all(r.id).map(shapeDial));
+}
+
+export function coldLeads(offerId) {
+  const rows = db.prepare(`${LEAD_SELECT} WHERE l.offer_id = ? ORDER BY l.id`).all(offerId);
+  const by = new Map(rows.map((r) => [r.id, []]));
+  for (const d of db.prepare('SELECT * FROM lead_dials WHERE offer_id = ? ORDER BY id').all(offerId)) by.get(d.lead_id)?.push(shapeDial(d));
+  return rows.map((r) => shapeColdLead(r, by.get(r.id)));
+}
+
+export const coldLeadCount = (offerId) => db.prepare('SELECT COUNT(*) n FROM leads WHERE offer_id = ?').get(offerId).n;
+
+function insertLead(offerId, f) {
+  const now = new Date().toISOString();
+  const row = { business: '', contact: '', phone: '', phone_key: null, email: '', suburb: '', category: '', score: null, follow_up: null, notes: '', extra: '[]', ...f };
+  return db
+    .prepare(
+      `INSERT INTO leads(offer_id, business, contact, phone, phone_key, email, suburb, category, score, follow_up, notes, extra, created_at, updated_at)
+       VALUES(@offerId, @business, @contact, @phone, @phone_key, @email, @suburb, @category, @score, @follow_up, @notes, @extra, @now, @now)`
+    )
+    .run({ ...row, offerId, now }).lastInsertRowid;
+}
+
+const needsName = (f) => !f.business && !f.contact && !f.phone;
+
+export function createColdLead(offerId, o) {
+  const f = leadFields(o);
+  if (needsName(f)) throw new Error('Add a business, a name or a number');
+  return getColdLead(offerId, insertLead(offerId, f));
+}
+
+export function updateColdLead(offerId, id, patch) {
+  const f = leadFields(patch);
+  if ('callId' in patch) {
+    const cid = patch.callId ? String(patch.callId) : null;
+    if (cid && !db.prepare('SELECT 1 FROM calls WHERE id = ?').get(cid)) throw new Error('That call is gone');
+    f.call_id = cid;
+    if (cid) db.prepare('UPDATE calls SET offer_id = ? WHERE id = ?').run(offerId, cid);
+  }
+  const cur = getColdLead(offerId, id);
+  if (!cur) return null;
+  if (needsName({ business: f.business ?? cur.business, contact: f.contact ?? cur.contact, phone: f.phone ?? cur.phone })) throw new Error('Add a business, a name or a number');
+  const keys = Object.keys(f);
+  if (keys.length)
+    db.prepare(`UPDATE leads SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = @id AND offer_id = @offerId`).run({
+      ...f,
+      now: new Date().toISOString(),
+      id: Number(id),
+      offerId
+    });
+  return getColdLead(offerId, id);
+}
+
+/** Delete a lead and take every dial it logged back off the day tallies. */
+export function deleteColdLead(offerId, id) {
+  db.transaction(() => {
+    const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
+    if (!l) return;
+    for (const d of db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? AND counted = 1').all(l.id)) bumpSdr(offerId, d.date, d.outcome, -1);
+    db.prepare('DELETE FROM lead_dials WHERE lead_id = ?').run(l.id);
+    db.prepare('DELETE FROM leads WHERE id = ?').run(l.id);
+  })();
+}
+
+/** Log one dial on a lead. It counts on `date` in the SDR tallies. */
+export function logDial(offerId, leadId, { outcome, date, followUp, note }) {
+  if (!SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
+  return db.transaction(() => {
+    const l = db.prepare('SELECT id, follow_up FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
+    if (!l) return null;
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, 1, ?, ?)').run(
+      l.id,
+      offerId,
+      date,
+      outcome,
+      String(note || '').slice(0, 1000),
+      l.follow_up,
+      new Date().toISOString()
+    );
+    bumpSdr(offerId, date, outcome, 1);
+    const fu = outcome === 'callback' || outcome === 'no_answer' ? (/^\d{4}-\d{2}-\d{2}$/.test(followUp || '') ? followUp : null) : null;
+    db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(fu, new Date().toISOString(), l.id);
+    if (outcome === 'booked') linkLeadCalls();
+    return getColdLead(offerId, l.id);
+  })();
+}
+
+/** Remove one dial (undo). Counted dials come back off the tally for their day. */
+export function removeDial(offerId, leadId, dialId) {
+  return db.transaction(() => {
+    const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
+    if (!d) return getColdLead(offerId, leadId);
+    if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
+    // undoing the latest dial puts the follow-up date back to what it was before that dial
+    const latest = db.prepare('SELECT MAX(id) id FROM lead_dials WHERE lead_id = ? AND counted = 1').get(d.lead_id).id;
+    if (d.counted && latest === d.id) db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(d.prev_follow_up, new Date().toISOString(), d.lead_id);
+    db.prepare('DELETE FROM lead_dials WHERE id = ?').run(d.id);
+    return getColdLead(offerId, leadId);
+  })();
+}
+
+/**
+ * Bring in rows from a spreadsheet. A row matches an existing lead by mobile, then email, then
+ * business name. Matches only fill in blanks and refresh the research columns, so anything logged
+ * in the app (dials, notes, follow-ups) is never overwritten.
+ */
+export function importColdLeads(offerId, rows) {
+  const out = { added: 0, updated: 0, skipped: 0 };
+  db.transaction(() => {
+    const existing = db.prepare('SELECT * FROM leads WHERE offer_id = ?').all(offerId);
+    const byPhone = new Map(existing.filter((l) => l.phone_key).map((l) => [l.phone_key, l]));
+    const byEmail = new Map(existing.filter((l) => l.email).map((l) => [l.email.toLowerCase(), l]));
+    const byName = new Map(existing.filter((l) => l.business).map((l) => [l.business.toLowerCase(), l]));
+    const hasHistory = db.prepare('SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 LIMIT 1');
+    const addHistory = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, label, counted, at) VALUES(?, ?, NULL, ?, ?, 0, ?)");
+    const now = new Date().toISOString();
+    for (const raw of (rows || []).slice(0, 5000)) {
+      const f = leadFields(raw);
+      if (needsName(f)) {
+        out.skipped++;
+        continue;
+      }
+      const match = (f.phone_key && byPhone.get(f.phone_key)) || (f.email && byEmail.get(f.email.toLowerCase())) || (f.business && byName.get(f.business.toLowerCase()));
+      let id;
+      if (match) {
+        const sets = {};
+        for (const k of ['business', 'contact', 'phone', 'phone_key', 'email', 'suburb', 'category', 'notes', 'follow_up'])
+          if (f[k] && !match[k]) sets[k] = f[k];
+        if (f.score != null) sets.score = f.score;
+        if ('extra' in f) {
+          const merged = new Map(JSON.parse(match.extra || '[]'));
+          for (const [k, v] of JSON.parse(f.extra)) merged.set(k, v);
+          sets.extra = JSON.stringify([...merged]);
+        }
+        const keys = Object.keys(sets);
+        if (keys.length) db.prepare(`UPDATE leads SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = @id`).run({ ...sets, now, id: match.id });
+        Object.assign(match, sets);
+        id = match.id;
+        out.updated++;
+      } else {
+        id = insertLead(offerId, f);
+        const row = { id, ...f };
+        if (f.phone_key) byPhone.set(f.phone_key, row);
+        if (f.email) byEmail.set(f.email.toLowerCase(), row);
+        if (f.business) byName.set(f.business.toLowerCase(), row);
+        out.added++;
+      }
+      const history = (Array.isArray(raw.history) ? raw.history : []).map((h) => String(h ?? '').trim().slice(0, 200)).filter(Boolean);
+      if (history.length && !hasHistory.get(id)) for (const h of history) addHistory.run(id, offerId, guessOutcome(h.replace(/^[^:]*:\s*/, '')), h, now);
+    }
+  })();
+  return out;
+}
+
+/**
+ * Match booked leads to calendar calls: same mobile, then same email, then the business or contact
+ * name in the event title or guest name. Every offer uses the same booking-call titles, so a call can
+ * land on any offer; once it matches a lead it is moved onto that lead's offer.
+ */
+export function linkLeadCalls() {
+  const leads = db
+    .prepare(
+      `SELECT l.*, (SELECT MIN(date) FROM lead_dials d WHERE d.lead_id = l.id AND d.outcome = 'booked') AS booked_on
+       FROM leads l LEFT JOIN calls c ON c.id = l.call_id
+       WHERE l.call_id IS NULL OR c.id IS NULL OR c.status = 'cancelled'`
+    )
+    .all()
+    .filter((l) => l.booked_on);
+  if (!leads.length) return 0;
+  const taken = new Set(db.prepare('SELECT call_id FROM leads WHERE call_id IS NOT NULL').all().map((r) => r.call_id));
+  const calls = db.prepare("SELECT id, title, prospect, email, phone, start FROM calls WHERE status != 'cancelled' ORDER BY start").all();
+  const set = db.prepare('UPDATE leads SET call_id = ?, updated_at = ? WHERE id = ?');
+  const move = db.prepare('UPDATE calls SET offer_id = ? WHERE id = ?');
+  let linked = 0;
+  for (const l of leads) {
+    const from = new Date(l.booked_on + 'T00:00:00Z').getTime() - 2 * 864e5;
+    const open = calls.filter((c) => !taken.has(c.id) && new Date(c.start).getTime() >= from);
+    const names = [l.business, l.contact].map((s) => s.toLowerCase().trim()).filter((s) => s.length >= 4);
+    const hit =
+      (l.phone_key && open.find((c) => phoneKey(c.phone) === l.phone_key)) ||
+      (l.email && open.find((c) => c.email?.toLowerCase() === l.email.toLowerCase())) ||
+      open.find((c) => names.some((n) => `${c.title} ${c.prospect}`.toLowerCase().includes(n)));
+    if (hit) {
+      taken.add(hit.id);
+      set.run(hit.id, new Date().toISOString(), l.id);
+      move.run(l.offer_id, hit.id);
+      linked++;
+    }
+  }
+  return linked;
+}
+
+export function linkableCalls(offerId, fromIso) {
+  return db
+    .prepare(
+      `SELECT id, title, prospect, start, offer_id FROM calls
+       WHERE status != 'cancelled' AND start >= ? AND id NOT IN (SELECT call_id FROM leads WHERE call_id IS NOT NULL)
+       ORDER BY (offer_id = ?) DESC, start LIMIT 60`
+    )
+    .all(fromIso, offerId);
 }

@@ -1,4 +1,4 @@
-import { db, getSettings, setSetting, listOffers, resolveOffer } from './db.js';
+import { db, getSettings, setSetting, listOffers, resolveOffer, linkLeadCalls } from './db.js';
 
 const env = process.env;
 
@@ -244,6 +244,11 @@ export async function syncAll() {
       out.errors.push(String(e.message || e));
     }
     out.linked = linkRecordings();
+    try {
+      out.leadsLinked = linkLeadCalls();
+    } catch (e) {
+      out.errors.push(String(e.message || e));
+    }
     setSetting('last_sync', JSON.stringify(out));
     return out;
   })().finally(() => (running = null));

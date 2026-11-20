@@ -1,7 +1,7 @@
 // Fills an empty database with made-up data so you can try the app (and take screenshots)
 // without connecting a calendar. Every name, number and email here is fictional.
 // Usage: DATA_DIR=demo-data NO_SYNC=1 node scripts/demo-seed.js
-import { db, upsertSdr, upsertClose, listOffers, updateOffer, createOffer } from '../src/lib/server/db.js';
+import { db, upsertSdr, upsertClose, listOffers, updateOffer, createOffer, importColdLeads, coldLeads, logDial } from '../src/lib/server/db.js';
 import { dayKey, addDays, dayStartIso } from '../src/lib/time.js';
 
 const TZ = 'Australia/Brisbane';
@@ -104,4 +104,31 @@ for (let i = -6; i <= 4; i++) {
     });
   }
 }
+// a cold-call list for the Leads tab (made-up businesses, 0400 000 xxx numbers)
+const trades = [
+  ['Harbourside Plumbing', 'Plumber', 'No website, all jobs come from word of mouth'],
+  ['Northside Cuts', 'Barber', 'Great reviews but the site is not mobile friendly'],
+  ['Greenline Landscapes', 'Landscaper', 'Google profile unclaimed, missing calls after hours'],
+  ['Bright Spark Electrical', 'Electrician', 'Site is a single Facebook page'],
+  ['Corner Bakehouse', 'Bakery', 'No online ordering, competitors have it'],
+  ['Summit Physio', 'Physio', 'Booking form is broken on mobile'],
+  ['Bayview Dental', 'Dentist', 'Old site, slow to load'],
+  ['Ironbark Fencing', 'Fencing', 'No reviews replied to'],
+  ['Little Sprouts Childcare', 'Childcare', 'Waitlist handled by phone only'],
+  ['Coastal Auto Care', 'Mechanic', 'No site at all, 4.9 stars on Google']
+];
+const suburbs = ['Carindale', 'Bulimba', 'Paddington', 'Chermside', 'Indooroopilly', 'Wynnum'];
+const first = ['Dave', 'Sam', 'Priya', 'Tom', 'Jess', 'Marco', 'Lena', 'Ben', 'Aisha', 'Rob'];
+importColdLeads(main, trades.map(([business, category, pitch], i) => ({
+  business, category, contact: first[i], suburb: suburbs[i % suburbs.length],
+  phone: `0400 000 ${String(500 + i).padStart(3, '0')}`, score: 9 - (i % 5),
+  extra: [['Pitch Angle', pitch], ['Why This Score', `${20 + i * 7} reviews, owner answers the phone`], ['Google Reviews', String(20 + i * 7)], ['Rating', (4.9 - i * 0.1).toFixed(1)], ['Website / Social', i % 3 ? `www.example.com/${i}` : '']],
+  history: i === 3 ? ['Call 1: NA'] : []
+})));
+const ls = coldLeads(main);
+logDial(main, ls[1].id, { outcome: 'no_answer', date: addDays(today, -1) });
+logDial(main, ls[2].id, { outcome: 'callback', date: addDays(today, -2), followUp: today, note: 'Owner back from holidays' });
+logDial(main, ls[5].id, { outcome: 'booked', date: addDays(today, -1) });
+logDial(main, ls[7].id, { outcome: 'not_interested', date: addDays(today, -1) });
+
 console.log('Demo data ready:', n, 'calls');

@@ -14,6 +14,7 @@
   const NAV = [
     { href: '/', label: 'Today', icon: 'today' },
     { href: '/dm', label: 'DM Setting', icon: 'chat', role: 'dm' },
+    { href: '/leads', label: 'Leads', icon: 'users', role: 'sdr' },
     { href: '/sdr', label: 'Dialling', icon: 'phone', role: 'sdr' },
     { href: '/closing', label: 'Closing', icon: 'handshake', role: 'closing' },
     { href: '/calls', label: 'Calls', icon: 'list' },

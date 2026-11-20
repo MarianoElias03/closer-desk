@@ -1,0 +1,262 @@
+// Cold-call leads: stages, the dial queue, and turning a spreadsheet into lead rows.
+
+export const STAGES = {
+  new: { label: 'Not called', tone: 'none' },
+  no_answer: { label: 'No answer', tone: 'iron' },
+  callback: { label: 'Callback', tone: 'yellow' },
+  booked: { label: 'Booked', tone: 'blue' },
+  not_interested: { label: 'Not interested', tone: 'red' },
+  wrong_no: { label: 'Wrong number', tone: 'slate' },
+  call_no_show: { label: 'No show', tone: 'iron' },
+  call_closed: { label: 'Closed', tone: 'green' },
+  call_not_interested: { label: 'Said no on call', tone: 'red' },
+  call_callback: { label: 'Call follow-up', tone: 'yellow' },
+  call_unqualified: { label: 'Unqualified', tone: 'slate' }
+};
+export const stageOf = (l) => STAGES[l.stage] || STAGES.new;
+
+const DIALABLE = ['new', 'no_answer', 'callback'];
+export const isDue = (l, today) => !!l.followUp && l.followUp <= today && DIALABLE.includes(l.stage);
+
+export const FILTERS = [
+  { key: 'queue', label: 'To dial', test: (l, today) => inQueue(l, today) },
+  { key: 'follow', label: 'Follow-ups', test: (l) => ['callback', 'call_callback', 'call_no_show'].includes(l.stage) },
+  { key: 'booked', label: 'Booked', test: (l) => l.stage === 'booked' },
+  { key: 'closed', label: 'Closed', test: (l) => l.stage === 'call_closed' },
+  { key: 'out', label: 'Out', test: (l) => ['not_interested', 'wrong_no', 'call_not_interested', 'call_unqualified'].includes(l.stage) },
+  { key: 'all', label: 'All', test: () => true }
+];
+
+/** Ready to ring today: never called, no answer, or a callback whose date has come. */
+export function inQueue(l, today) {
+  if (!DIALABLE.includes(l.stage)) return false;
+  if (l.followUp) return l.followUp <= today;
+  if (l.stage === 'callback') return true;
+  return l.lastDialOn !== today;
+}
+
+/** Callbacks that are due come first, then fresh leads by score, then no-answers you've tried least. */
+export function dialQueue(leads, today) {
+  const rank = (l) => (isDue(l, today) ? 0 : l.stage === 'new' ? 1 : 2);
+  const score = (l) => (l.score == null ? -Infinity : l.score);
+  return leads
+    .filter((l) => inQueue(l, today))
+    .sort(
+      (a, b) =>
+        rank(a) - rank(b) ||
+        (rank(a) === 0 ? a.followUp.localeCompare(b.followUp) : 0) ||
+        (rank(a) === 2 ? a.attempts - b.attempts || (a.lastDialOn || '').localeCompare(b.lastDialOn || '') : 0) ||
+        score(b) - score(a) ||
+        a.id - b.id
+    );
+}
+
+export const leadName = (l) => l.business || l.contact || l.phone || 'Lead';
+
+/** Research columns worth putting up top while you're on the phone. */
+export function pickExtra(l, re) {
+  return l.extra.find(([k]) => re.test(k))?.[1] || '';
+}
+
+export function linkFor(v) {
+  const s = String(v || '').trim();
+  if (/\s/.test(s) || s.length < 5) return null;
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(s)) return 'https://' + s;
+  return null;
+}
+
+// ---------- spreadsheet columns ----------
+
+export const FIELDS = [
+  { key: 'business', label: 'Business' },
+  { key: 'contact', label: 'Contact name' },
+  { key: 'phone', label: 'Mobile / phone' },
+  { key: 'email', label: 'Email' },
+  { key: 'suburb', label: 'Suburb' },
+  { key: 'category', label: 'Category' },
+  { key: 'score', label: 'Prospect score' },
+  { key: 'followUp', label: 'Follow-up date' },
+  { key: 'notes', label: 'Notes' },
+  { key: 'history', label: 'Past call (not counted)' },
+  { key: 'extra', label: 'Research detail' },
+  { key: 'skip', label: "Don't import" }
+];
+
+const GUESS = [
+  ['business', /^(business|business name|company|company name|account)$/],
+  ['contact', /^(contact|contact name|name|owner|decision maker|first name)$/],
+  ['phone', /^(mobile|phone|phone number|mobile number|number|cell|ph)$/],
+  ['email', /^(email|e-mail|email address)$/],
+  ['suburb', /^(suburb|city|town|location|area)$/],
+  ['category', /^(category|industry|niche|type)$/],
+  ['score', /^(prospect score|score|lead score)$/],
+  ['followUp', /^(follow-?up( date)?|call ?back( date)?|next call)$/],
+  ['notes', /^(notes?|comments?)$/],
+  ['history', /^(call|dial|attempt) ?\d+$/]
+];
+
+export function guessField(header) {
+  const h = String(header || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!h) return 'skip';
+  return GUESS.find(([, re]) => re.test(h))?.[0] || 'extra';
+}
+
+/** Excel serial, DD/MM/YYYY (Australian), YYYY-MM-DD, or "20 Nov 2026". */
+export function parseDate(v, today) {
+  const s = String(v ?? '').trim();
+  if (!s) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  if (/^\d{5}(\.\d+)?$/.test(s)) {
+    const d = new Date(Date.UTC(1899, 11, 30) + Math.floor(Number(s)) * 864e5);
+    return d.toISOString().slice(0, 10);
+  }
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${pad(m[2])}-${pad(m[3])}`;
+  m = s.match(/^(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?$/);
+  if (m) {
+    const y = m[3] ? (m[3].length === 2 ? '20' + m[3] : m[3]) : (today || new Date().toISOString()).slice(0, 4);
+    const [d, mo] = [Number(m[1]), Number(m[2])];
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return `${y}-${pad(mo)}-${pad(d)}`;
+  }
+  const t = Date.parse(/\d{4}/.test(s) ? s : `${s} ${(today || new Date().toISOString()).slice(0, 4)}`);
+  if (Number.isFinite(t)) {
+    const d = new Date(t);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+  return null;
+}
+
+/** Spreadsheet rows (first row = headers) to lead objects for /api/leads/import. */
+export function toLeads(headers, rows, mapping, today) {
+  const out = [];
+  for (const r of rows) {
+    if (!r.some((c) => String(c ?? '').trim())) continue;
+    const lead = { extra: [], history: [] };
+    headers.forEach((h, i) => {
+      const v = String(r[i] ?? '').trim();
+      const f = mapping[i];
+      if (!v || f === 'skip') return;
+      if (f === 'extra') lead.extra.push([h || `Column ${i + 1}`, v]);
+      else if (f === 'history') lead.history.push(`${h}: ${v}`);
+      else if (f === 'followUp') {
+        const d = parseDate(v, today);
+        if (d) lead.followUp = d;
+        else lead.extra.push([h, v]);
+      } else if (f === 'phone') {
+        // Excel drops the leading 0 off mobiles stored as numbers
+        const d = v.replace(/\s/g, '');
+        lead.phone = /^4\d{8}$/.test(d) ? '0' + v : /^614\d{8}$/.test(d) ? '+' + v : v;
+      } else lead[f] = lead[f] ? `${lead[f]} ${v}` : v;
+    });
+    if (lead.business || lead.contact || lead.phone) out.push(lead);
+  }
+  return out;
+}
+
+// ---------- reading files ----------
+
+/** CSV or tab-separated (what you get copying cells out of Excel). Handles quoted cells. */
+export function parseDelimited(text) {
+  const first = text.split(/\r?\n/, 1)[0];
+  const sep = first.includes('\t') ? '\t' : (first.match(/;/g) || []).length > (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) {
+      if (c === '"' && text[i + 1] === '"') (cell += '"'), i++;
+      else if (c === '"') q = false;
+      else cell += c;
+    } else if (c === '"' && cell === '') q = true;
+    else if (c === sep) row.push(cell), (cell = '');
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell), rows.push(row), (row = []), (cell = '');
+    } else cell += c;
+  }
+  if (cell !== '' || row.length) row.push(cell), rows.push(row);
+  return rows.filter((r) => r.some((c) => c.trim()));
+}
+
+async function unzip(buf) {
+  const v = new DataView(buf);
+  let eocd = -1;
+  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 66000); i--)
+    if (v.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  if (eocd < 0) throw new Error('That file is not a .xlsx workbook');
+  const count = v.getUint16(eocd + 10, true);
+  let p = v.getUint32(eocd + 16, true);
+  const files = new Map();
+  const dec = new TextDecoder();
+  for (let n = 0; n < count; n++) {
+    const method = v.getUint16(p + 10, true);
+    const size = v.getUint32(p + 20, true);
+    const nameLen = v.getUint16(p + 28, true);
+    const extraLen = v.getUint16(p + 30, true);
+    const commentLen = v.getUint16(p + 32, true);
+    const local = v.getUint32(p + 42, true);
+    const name = dec.decode(new Uint8Array(buf, p + 46, nameLen));
+    files.set(name, { method, size, local });
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return async (name) => {
+    const f = files.get(name);
+    if (!f) return null;
+    const start = f.local + 30 + v.getUint16(f.local + 26, true) + v.getUint16(f.local + 28, true);
+    const bytes = new Uint8Array(buf, start, f.size);
+    if (f.method === 0) return dec.decode(bytes);
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(stream).text();
+  };
+}
+
+const xml = (s) => new DOMParser().parseFromString(s, 'application/xml');
+const kids = (el, tag) => [...el.getElementsByTagName(tag)];
+const colIndex = (ref) => [...ref.replace(/\d+/g, '')].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+
+/** Read an .xlsx in the browser. Returns { sheets: [name], read(name) -> rows }. */
+export async function readXlsx(buf) {
+  const get = await unzip(buf);
+  const wb = xml((await get('xl/workbook.xml')) || '');
+  const rels = xml((await get('xl/_rels/workbook.xml.rels')) || '<r/>');
+  const target = Object.fromEntries(kids(rels, 'Relationship').map((r) => [r.getAttribute('Id'), r.getAttribute('Target')]));
+  const sheets = kids(wb, 'sheet').map((s) => {
+    const t = target[s.getAttribute('r:id')] || '';
+    return { name: s.getAttribute('name'), path: t.startsWith('/') ? t.slice(1) : 'xl/' + t.replace(/^\.\//, '') };
+  });
+  if (!sheets.length) throw new Error('No sheets found in that workbook');
+  const ssText = await get('xl/sharedStrings.xml');
+  const shared = ssText ? kids(xml(ssText), 'si').map((si) => kids(si, 't').map((t) => t.textContent).join('')) : [];
+  return {
+    sheets: sheets.map((s) => s.name),
+    async read(name) {
+      const s = sheets.find((x) => x.name === name) || sheets[0];
+      const doc = xml((await get(s.path)) || '<x/>');
+      const rows = [];
+      for (const r of kids(doc, 'row')) {
+        const row = [];
+        for (const c of kids(r, 'c')) {
+          const t = c.getAttribute('t');
+          const val = c.getElementsByTagName('v')[0]?.textContent ?? '';
+          const text =
+            t === 's'
+              ? (shared[Number(val)] ?? '')
+              : t === 'inlineStr'
+                ? kids(c, 't').map((x) => x.textContent).join('')
+                : t === 'b'
+                  ? val === '1' ? 'TRUE' : 'FALSE'
+                  : /^-?\d+\.\d{7,}$/.test(val) ? String(Number(Number(val).toPrecision(12))) : val;
+          row[colIndex(c.getAttribute('r') || 'A')] = text;
+        }
+        rows[Number(r.getAttribute('r') || rows.length + 1) - 1] = Array.from(row, (x) => x ?? '');
+      }
+      return Array.from(rows, (x) => x ?? []).filter((r) => r.some((c) => String(c).trim()));
+    }
+  };
+}
