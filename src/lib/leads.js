@@ -261,3 +261,32 @@ export async function readXlsx(buf) {
     }
   };
 }
+
+// ---------- history times (always shown in the business timezone) ----------
+
+export function whenLabel(iso, tz, withDay = true) {
+  return new Intl.DateTimeFormat('en-AU', {
+    timeZone: tz,
+    ...(withDay ? { weekday: 'short' } : {}),
+    day: 'numeric',
+    month: 'short',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(new Date(iso));
+}
+
+/** ISO instant -> { date: 'YYYY-MM-DD', time: 'HH:mm' } on the wall clock in tz. */
+export function wallClock(iso, tz) {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+      .formatToParts(new Date(iso))
+      .map((x) => [x.type, x.value])
+  );
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
+}
+
+export function sinceLabel(iso, today, tz) {
+  const d = wallClock(iso, tz).date;
+  const days = Math.round((Date.UTC(...today.split('-').map((n, i) => n - (i === 1))) - Date.UTC(...d.split('-').map((n, i) => n - (i === 1)))) / 864e5);
+  return days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+}

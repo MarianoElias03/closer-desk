@@ -49,7 +49,7 @@
   </section>
 {/if}
 
-<LeadDialer leads={data.leads} today={data.today} bind:currentId={dialId} onopen={(id) => (expanded = id)} />
+<LeadDialer leads={data.leads} today={data.today} tz={data.tz} bind:currentId={dialId} onopen={(id) => (expanded = id)} />
 <ColdLeads leads={data.leads} today={data.today} tz={data.tz} linkable={data.linkable} bind:expanded ondial={dialNow} />
 
 {#if importing}

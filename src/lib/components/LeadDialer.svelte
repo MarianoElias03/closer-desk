@@ -3,12 +3,12 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { dialQueue, isDue, leadName, pickExtra, linkFor, stageOf } from '$lib/leads.js';
+  import { dialQueue, isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel } from '$lib/leads.js';
   import { dayLabel, ddmm } from '$lib/fmt.js';
   import { addDays } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  let { leads, today, currentId = $bindable(null), onopen } = $props();
+  let { leads, today, tz, currentId = $bindable(null), onopen } = $props();
 
   let skipped = $state([]);
   let last = $state(null);
@@ -154,7 +154,11 @@
               {:else}
                 <span class="chip t-{stageOf(current).tone}"><span class="dot"></span>{stageOf(current).label}</span>
               {/if}
-              {#if current.attempts}<span class="faint small">{current.attempts} {current.attempts === 1 ? 'dial' : 'dials'} so far</span>{/if}
+              {#if current.lastContactAt}
+                <span class="faint small">Last contacted {sinceLabel(current.lastContactAt, today, tz)}, {whenLabel(current.lastContactAt, tz)}</span>
+              {:else if current.attempts}
+                <span class="faint small">{current.attempts} {current.attempts === 1 ? 'call' : 'calls'} on your sheet, no dates</span>
+              {/if}
             </div>
           </div>
         </div>
@@ -191,7 +195,7 @@
           <ol class="hist" aria-label="Past dials">
             {#each current.dials as d}
               <li class="t-{d.outcome ? SDR_OUTCOMES.find((o) => o.key === d.outcome).tone : 'none'}">
-                <i></i>{d.date ? `${ddmm(d.date)}: ${SDR_OUTCOMES.find((o) => o.key === d.outcome)?.label}` : d.label}{d.note ? `, "${d.note}"` : ''}
+                <i></i>{d.date ? `${whenLabel(d.at, tz, false)}: ${SDR_OUTCOMES.find((o) => o.key === d.outcome)?.label || 'Note'}` : d.label}{d.note ? `, "${d.note}"` : ''}
               </li>
             {/each}
           </ol>

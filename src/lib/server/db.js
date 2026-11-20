@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { dayKey, dayStartIso } from '../time.js';
+import { wallClock } from '../leads.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -671,6 +673,7 @@ function shapeColdLead(r, dials) {
     dials,
     attempts: dials.length,
     lastDialOn: dials.filter((d) => d.date).at(-1)?.date || null,
+    lastContactAt: dials.filter((d) => d.date).at(-1)?.at || null,
     updatedAt: r.updated_at
   };
 }
@@ -680,13 +683,13 @@ const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, label: d
 export function getColdLead(offerId, id) {
   const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
   if (!r) return null;
-  return shapeColdLead(r, db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? ORDER BY id').all(r.id).map(shapeDial));
+  return shapeColdLead(r, db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? ORDER BY (date IS NULL) DESC, at, id').all(r.id).map(shapeDial));
 }
 
 export function coldLeads(offerId) {
   const rows = db.prepare(`${LEAD_SELECT} WHERE l.offer_id = ? ORDER BY l.id`).all(offerId);
   const by = new Map(rows.map((r) => [r.id, []]));
-  for (const d of db.prepare('SELECT * FROM lead_dials WHERE offer_id = ? ORDER BY id').all(offerId)) by.get(d.lead_id)?.push(shapeDial(d));
+  for (const d of db.prepare('SELECT * FROM lead_dials WHERE offer_id = ? ORDER BY (date IS NULL) DESC, at, id').all(offerId)) by.get(d.lead_id)?.push(shapeDial(d));
   return rows.map((r) => shapeColdLead(r, by.get(r.id)));
 }
 
@@ -757,7 +760,8 @@ export function logDial(offerId, leadId, { outcome, date, followUp, note }) {
       outcome,
       String(note || '').slice(0, 1000),
       l.follow_up,
-      new Date().toISOString()
+      // stamped now, unless it's being logged for another day
+      dayKey(Date.now(), getSettings().timezone) === date ? new Date().toISOString() : atFrom(date, '12:00')
     );
     bumpSdr(offerId, date, outcome, 1);
     const fu = outcome === 'callback' || outcome === 'no_answer' ? (/^\d{4}-\d{2}-\d{2}$/.test(followUp || '') ? followUp : null) : null;
@@ -793,7 +797,7 @@ export function importColdLeads(offerId, rows) {
     const byPhone = new Map(existing.filter((l) => l.phone_key).map((l) => [l.phone_key, l]));
     const byEmail = new Map(existing.filter((l) => l.email).map((l) => [l.email.toLowerCase(), l]));
     const byName = new Map(existing.filter((l) => l.business).map((l) => [l.business.toLowerCase(), l]));
-    const hasHistory = db.prepare('SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 LIMIT 1');
+    const hasHistory = db.prepare("SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 AND label != '' LIMIT 1");
     const addHistory = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, label, counted, at) VALUES(?, ?, NULL, ?, ?, 0, ?)");
     const now = new Date().toISOString();
     for (const raw of (rows || []).slice(0, 5000)) {
@@ -880,4 +884,60 @@ export function linkableCalls(offerId, fromIso) {
        ORDER BY (offer_id = ?) DESC, start LIMIT 60`
     )
     .all(fromIso, offerId);
+}
+
+// ---------- lead history ----------
+// Every dial is a history entry with a date and time. Ones logged from the dialler are stamped
+// automatically; these let you add a contact that happened elsewhere, or fix the date and time on
+// one (like a Call 1 that came in from the sheet with no date). "counted" says whether it is in the
+// Dialling numbers for its day; changing the date, outcome or that switch moves the tally to match.
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+/** Wall-clock date + time in the business timezone -> ISO instant. */
+function atFrom(date, time) {
+  const tz = getSettings().timezone;
+  const m = String(time || '').match(TIME_RE);
+  const mins = m ? Number(m[1]) * 60 + Number(m[2]) : 12 * 60;
+  return new Date(new Date(dayStartIso(date, tz)).getTime() + mins * 60000).toISOString();
+}
+
+function entryFields(e) {
+  if (!DATE_RE.test(e.date || '')) throw new Error('Pick the date it happened');
+  const outcome = e.outcome ? String(e.outcome) : null;
+  if (outcome && !SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
+  const counted = !!e.counted;
+  if (counted && !outcome) throw new Error('Pick an outcome to count it on Dialling');
+  const at = atFrom(e.date, e.time);
+  return { date: dayKey(at, getSettings().timezone), at, outcome, counted, note: String(e.note ?? '').slice(0, 1000) };
+}
+
+export function addLeadEntry(offerId, leadId, e) {
+  const f = entryFields(e);
+  return db.transaction(() => {
+    const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
+    if (!l) return null;
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, note, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(
+      l.id, offerId, f.date, f.outcome, f.note, f.counted ? 1 : 0, f.at
+    );
+    if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
+    db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
+    return getColdLead(offerId, l.id);
+  })();
+}
+
+export function updateLeadEntry(offerId, leadId, dialId, e) {
+  return db.transaction(() => {
+    const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
+    if (!d) return null;
+    const was = d.date ? wallClock(d.at, getSettings().timezone) : {};
+    const f = entryFields({ ...was, outcome: d.outcome, note: d.note, counted: !!d.counted, ...e });
+    if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
+    if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
+    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, note = ?, counted = ? WHERE id = ?').run(
+      f.date, f.at, f.outcome, f.note, f.counted ? 1 : 0, d.id
+    );
+    return getColdLead(offerId, leadId);
+  })();
 }

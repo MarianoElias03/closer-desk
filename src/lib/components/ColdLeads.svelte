@@ -3,9 +3,10 @@
   import { tick } from 'svelte';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { SDR_OUTCOMES, CALL_OUTCOMES } from '$lib/stats.js';
-  import { FILTERS, stageOf, leadName, linkFor, isDue } from '$lib/leads.js';
-  import { ddmm, dayLabel, money } from '$lib/fmt.js';
+  import LeadHistory from './LeadHistory.svelte';
+  import { CALL_OUTCOMES } from '$lib/stats.js';
+  import { FILTERS, stageOf, leadName, linkFor, isDue, sinceLabel } from '$lib/leads.js';
+  import { ddmm, money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
   let { leads, today, tz, linkable = [], expanded = $bindable(null), ondial } = $props();
@@ -89,16 +90,6 @@
       toast(e.message, 'error');
     }
   }
-  async function dropDial(l, d) {
-    if (d.counted && !confirm(`Remove the ${ddmm(d.date)} ${outcomeLabel(d.outcome).toLowerCase()}? It comes off that day's numbers.`)) return;
-    try {
-      await api(`/api/leads/${l.id}/dials/${d.id}`, 'DELETE');
-      toast('Dial removed');
-      await invalidateAll();
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  }
   async function link(l, callId) {
     try {
       await api(`/api/leads/${l.id}`, 'PATCH', { callId });
@@ -120,8 +111,6 @@
     }
   }
 
-  const outcomeLabel = (k) => SDR_OUTCOMES.find((o) => o.key === k)?.label || 'Note';
-  const outcomeTone = (k) => SDR_OUTCOMES.find((o) => o.key === k)?.tone || 'none';
   const callOutcome = (k) => CALL_OUTCOMES.find((o) => o.key === k) || CALL_OUTCOMES[0];
   const when = (iso) =>
     new Intl.DateTimeFormat('en-AU', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }).format(new Date(iso));
@@ -131,7 +120,7 @@
   <div class="head">
     <div>
       <h2>Lead list</h2>
-      <p class="muted small">Everything on this offer's call list. Click a lead to edit it, see its dials or link its booked call.</p>
+      <p class="muted small">Everything on this offer's call list. Click a lead to edit it, see its history or link its booked call.</p>
     </div>
     <div class="tools">
       <label class="search">
@@ -181,7 +170,7 @@
             <span class="meta">
               <span class="chip"><span class="dot"></span>{st.label}{l.call?.cash ? ` ${money(l.call.cash)}` : ''}</span>
               {#if l.followUp && !l.call}<span class="fu" class:due={isDue(l, today)}><Icon name="clock" size={13} />{ddmm(l.followUp)}</span>{/if}
-              {#if l.attempts}<span class="faint at">{l.attempts}x</span>{/if}
+              {#if l.lastContactAt}<span class="faint at" title="Last contacted">{sinceLabel(l.lastContactAt, today, tz)}</span>{:else if l.attempts}<span class="faint at">{l.attempts}x</span>{/if}
             </span>
           </button>
 
@@ -210,25 +199,7 @@
                 </dl>
               {/if}
 
-              <div class="block">
-                <span class="k">Dials</span>
-                {#if l.dials.length}
-                  <ul class="dials">
-                    {#each l.dials as d (d.id)}
-                      <li class="t-{outcomeTone(d.outcome)}">
-                        <i></i>
-                        <span>
-                          {#if d.date}<strong>{dayLabel(d.date, { day: 'numeric', month: 'short' })}</strong> {outcomeLabel(d.outcome)}{:else}{d.label} <span class="faint">(from your sheet, not counted)</span>{/if}
-                          {#if d.note}<span class="muted">, "{d.note}"</span>{/if}
-                        </span>
-                        <button class="x" onclick={() => dropDial(l, d)} aria-label="Remove this dial"><Icon name="x" size={13} /></button>
-                      </li>
-                    {/each}
-                  </ul>
-                {:else}
-                  <p class="faint small">Not dialled yet.</p>
-                {/if}
-              </div>
+              <LeadHistory lead={l} {tz} {today} />
 
               <div class="block">
                 <span class="k">Booked call</span>
@@ -496,40 +467,6 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--ink-3);
-  }
-  .dials {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    gap: 4px;
-  }
-  .dials li {
-    border: 0;
-    background: transparent;
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    font-size: 13.5px;
-  }
-  .dials i {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--tone);
-  }
-  .x {
-    margin-left: auto;
-    border: 0;
-    background: transparent;
-    color: var(--ink-3);
-    padding: 4px;
-    border-radius: 6px;
-  }
-  .x:hover {
-    color: var(--red);
-    background: var(--red-soft);
   }
   .call {
     display: flex;
