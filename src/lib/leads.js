@@ -1,4 +1,9 @@
 // Cold-call leads: stages, the dial queue, and turning a spreadsheet into lead rows.
+import { SDR_OUTCOMES } from './stats.js';
+
+/** What a history entry can be: the five dial outcomes, plus a call they made to you (never counted). */
+export const ENTRY_TYPES = [...SDR_OUTCOMES, { key: 'inbound', label: 'Inbound call', short: 'Inbound', tone: 'green' }];
+export const entryType = (k) => ENTRY_TYPES.find((o) => o.key === k);
 
 export const STAGES = {
   new: { label: 'Not called', tone: 'none' },

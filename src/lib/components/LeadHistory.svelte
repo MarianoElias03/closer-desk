@@ -2,15 +2,15 @@
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { whenLabel, wallClock, sinceLabel } from '$lib/leads.js';
+  import { ENTRY_TYPES, entryType, whenLabel, wallClock, sinceLabel } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
 
   let { lead, tz, today } = $props();
 
   // newest first; sheet history with no date goes last
   const entries = $derived([...lead.dials].reverse());
-  const outcome = (k) => SDR_OUTCOMES.find((o) => o.key === k);
+  const outcome = entryType;
+  const countable = (k) => !!k && k !== 'inbound';
 
   let adding = $state(false);
   let draft = $state(blankDraft());
@@ -21,6 +21,11 @@
   function blankDraft() {
     const now = wallClock(new Date().toISOString(), tz);
     return { ...now, outcome: 'no_answer', note: '', counted: false };
+  }
+  // they rang you: open the form already set to an inbound call at the current time
+  function inbound() {
+    draft = { ...blankDraft(), outcome: 'inbound' };
+    adding = true;
   }
 
   async function send(path, method, body, msg) {
@@ -42,7 +47,8 @@
 
   async function add(e) {
     e.preventDefault();
-    if (await send(`/api/leads/${lead.id}/history`, 'POST', draft, 'Added to their history')) {
+    const body = { ...draft, counted: countable(draft.outcome) && draft.counted };
+    if (await send(`/api/leads/${lead.id}/history`, 'POST', body, draft.outcome === 'inbound' ? 'Inbound call added' : 'Added to their history')) {
       adding = false;
       draft = blankDraft();
     }
@@ -54,7 +60,8 @@
   }
   async function save(e, d) {
     e.preventDefault();
-    if (await send(`/api/leads/${lead.id}/dials/${d.id}`, 'PATCH', form, 'Entry updated')) editing = null;
+    const body = { ...form, counted: countable(form.outcome) && form.counted };
+    if (await send(`/api/leads/${lead.id}/dials/${d.id}`, 'PATCH', body, 'Entry updated')) editing = null;
   }
   async function remove(d) {
     if (d.counted && !confirm(`Remove this ${outcome(d.outcome)?.label.toLowerCase()}? It comes off that day's Dialling numbers.`)) return;
@@ -70,6 +77,7 @@
     {:else}
       <span class="last faint">No contact with a date yet</span>
     {/if}
+    <button class="btn small" onclick={inbound}><Icon name="phone" size={14} />They called in</button>
     <button class="btn small" onclick={() => (adding = !adding)} aria-expanded={adding}><Icon name="plus" size={14} />Add contact</button>
   </div>
 
@@ -79,12 +87,16 @@
       <label class="field">Time<input type="time" bind:value={draft.time} /></label>
       <label class="field">What happened
         <select bind:value={draft.outcome}>
-          {#each SDR_OUTCOMES as o}<option value={o.key}>{o.label}</option>{/each}
+          {#each ENTRY_TYPES as o}<option value={o.key}>{o.label}</option>{/each}
           <option value="">Other (note only)</option>
         </select>
       </label>
       <label class="field wide">Note<input bind:value={draft.note} placeholder="Texted the quote, spoke to his wife, emailed..." /></label>
-      <label class="check"><input type="checkbox" bind:checked={draft.counted} disabled={!draft.outcome} />Count it on Dialling for that day</label>
+      {#if countable(draft.outcome)}
+        <label class="check"><input type="checkbox" bind:checked={draft.counted} />Count it on Dialling for that day</label>
+      {:else}
+        <span class="check faint">{draft.outcome === 'inbound' ? "Inbound calls don't count on Dialling" : "Notes don't count on Dialling"}</span>
+      {/if}
       <div class="btns">
         <button type="button" class="btn small ghost" onclick={() => (adding = false)}>Cancel</button>
         <button class="btn small primary" disabled={busy}><Icon name="check" size={14} />Add</button>
@@ -104,12 +116,16 @@
               <label class="field">Time<input type="time" bind:value={form.time} /></label>
               <label class="field">What happened
                 <select bind:value={form.outcome}>
-                  {#each SDR_OUTCOMES as x}<option value={x.key}>{x.label}</option>{/each}
+                  {#each ENTRY_TYPES as x}<option value={x.key}>{x.label}</option>{/each}
                   <option value="">Other (note only)</option>
                 </select>
               </label>
               <label class="field wide">Note<input bind:value={form.note} /></label>
-              <label class="check"><input type="checkbox" bind:checked={form.counted} disabled={!form.outcome} />Count it on Dialling for that day</label>
+              {#if countable(form.outcome)}
+                <label class="check"><input type="checkbox" bind:checked={form.counted} />Count it on Dialling for that day</label>
+              {:else}
+                <span class="check faint">{form.outcome === 'inbound' ? "Inbound calls don't count on Dialling" : "Notes don't count on Dialling"}</span>
+              {/if}
               <div class="btns">
                 <button type="button" class="btn small ghost" onclick={() => (editing = null)}>Cancel</button>
                 <button class="btn small primary" disabled={busy}><Icon name="check" size={14} />Save</button>
@@ -121,7 +137,7 @@
               <span>
                 <strong>{o?.label || 'Note'}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}{#if d.note}<span class="muted">, "{d.note}"</span>{/if}
               </span>
-              {#if !d.counted}<span class="tag faint">not in Dialling numbers</span>{/if}
+              {#if d.outcome === 'inbound'}<span class="tag faint">they called you, not in Dialling numbers</span>{:else if !d.counted}<span class="tag faint">not in Dialling numbers</span>{/if}
             </div>
             <div class="row-btns">
               <button class="ico" onclick={() => startEdit(d)} aria-label="Edit this entry"><Icon name="edit" size={14} /></button>

@@ -613,6 +613,7 @@ export function guessOutcome(text) {
   if (/wrong|disconn|invalid|not in service|bad n/.test(t)) return 'wrong_no';
   if (/not int|\bni\b|no thanks|not keen|hung up|\bdnc\b|do not call|happy with|already (paid|have|has|got|using|use)|not looking|no need|don'?t need/.test(t)) return 'not_interested';
   if (/book/.test(t)) return 'booked';
+  if (/inbound|called (me |us )?back|returned (my |the )?call|rang (me )?back/.test(t)) return 'inbound';
   if (/call ?back|\bcb\b|follow|later|busy/.test(t)) return 'callback';
   if (/no ?ans|\bna\b|n\/a|\bvm\b|voice ?mail|no pick|rang out|left msg|left message|\bnr\b/.test(t)) return 'no_answer';
   return null;
@@ -651,8 +652,7 @@ const LEAD_SELECT = `
 
 function shapeColdLead(r, dials) {
   if (!r) return null;
-  const counted = dials.filter((d) => d.outcome);
-  const last = counted.at(-1) || null;
+  const last = dials.filter((d) => SDR_FIELDS.includes(d.outcome)).at(-1) || null;
   const call = r.call_id && r.c_start ? { id: r.call_id, start: r.c_start, outcome: r.c_outcome, cash: r.c_cash, title: r.c_title, cancelled: r.c_status === 'cancelled' } : null;
   let stage = last?.outcome || 'new';
   if (call && !call.cancelled) stage = call.outcome && call.outcome !== 'pending' ? 'call_' + call.outcome : 'booked';
@@ -671,7 +671,7 @@ function shapeColdLead(r, dials) {
     call,
     stage,
     dials,
-    attempts: dials.length,
+    attempts: dials.filter((d) => d.outcome !== 'inbound').length,
     lastDialOn: dials.filter((d) => d.date).at(-1)?.date || null,
     lastContactAt: dials.filter((d) => d.date).at(-1)?.at || null,
     updatedAt: r.updated_at
@@ -893,6 +893,7 @@ export function linkableCalls(offerId, fromIso) {
 // Dialling numbers for its day; changing the date, outcome or that switch moves the tally to match.
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const ENTRY_TYPES = [...SDR_FIELDS, 'inbound'];
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 /** Wall-clock date + time in the business timezone -> ISO instant. */
@@ -906,8 +907,9 @@ function atFrom(date, time) {
 function entryFields(e) {
   if (!DATE_RE.test(e.date || '')) throw new Error('Pick the date it happened');
   const outcome = e.outcome ? String(e.outcome) : null;
-  if (outcome && !SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
-  const counted = !!e.counted;
+  if (outcome && !ENTRY_TYPES.includes(outcome)) throw new Error('Unknown outcome');
+  // an inbound call is them ringing you, so it never goes in the dial numbers
+  const counted = !!e.counted && outcome !== 'inbound';
   if (counted && !outcome) throw new Error('Pick an outcome to count it on Dialling');
   const at = atFrom(e.date, e.time);
   return { date: dayKey(at, getSettings().timezone), at, outcome, counted, note: String(e.note ?? '').slice(0, 1000) };

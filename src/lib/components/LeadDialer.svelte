@@ -3,7 +3,7 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { dialQueue, isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel } from '$lib/leads.js';
+  import { dialQueue, isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType } from '$lib/leads.js';
   import { dayLabel, ddmm } from '$lib/fmt.js';
   import { addDays } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
@@ -157,7 +157,7 @@
               {#if current.lastContactAt}
                 <span class="faint small">Last contacted {sinceLabel(current.lastContactAt, today, tz)}, {whenLabel(current.lastContactAt, tz)}</span>
               {:else if current.attempts}
-                <span class="faint small">{current.attempts} {current.attempts === 1 ? 'call' : 'calls'} on your sheet, no dates</span>
+                <span class="faint small">{current.dials.length} {current.dials.length === 1 ? 'call' : 'calls'} on your sheet, no dates</span>
               {/if}
             </div>
           </div>
@@ -194,8 +194,8 @@
         {#if current.dials.length}
           <ol class="hist" aria-label="Past dials">
             {#each current.dials as d}
-              <li class="t-{d.outcome ? SDR_OUTCOMES.find((o) => o.key === d.outcome).tone : 'none'}">
-                <i></i>{d.date ? `${whenLabel(d.at, tz, false)}: ${SDR_OUTCOMES.find((o) => o.key === d.outcome)?.label || 'Note'}` : d.label}{d.note ? `, "${d.note}"` : ''}
+              <li class="t-{entryType(d.outcome)?.tone || 'none'}">
+                <i></i>{d.date ? `${whenLabel(d.at, tz, false)}: ${entryType(d.outcome)?.label || 'Note'}` : d.label}{d.note ? `, "${d.note}"` : ''}
               </li>
             {/each}
           </ol>
