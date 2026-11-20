@@ -111,8 +111,7 @@
       <strong class="num">{data.nav.position}</strong> of <span class="num">{data.nav.total}</span> in {listLabel}
     {:else}
       Not in {listLabel} any more<span class="faint">, {data.nav.total} left there</span>
-    {/if}
-    {#if data.view.q}<span class="faint">, matching "{data.view.q}"</span>{/if}
+    {/if}{#if data.view.channel}<span class="faint">, {data.view.channel === 'call' ? 'called' : data.view.channel === 'sms' ? 'texted' : 'emailed'}</span>{/if}{#if data.view.q}<span class="faint">, matching "{data.view.q}"</span>{/if}
   </span>
   <div class="arrows">
     <button class="btn small" onclick={() => step(data.nav.prev, -1)} disabled={!data.nav.prev} title="Previous lead (left arrow)">

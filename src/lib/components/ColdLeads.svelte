@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { goto, invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { FILTERS, SORTS, stageOf, leadName, isDue, sinceLabel, listLeads, listView, viewQuery } from '$lib/leads.js';
+  import { FILTERS, SORTS, CHANNELS, stageOf, leadName, isDue, sinceLabel, listLeads, listView, viewQuery } from '$lib/leads.js';
   import { ddmm, money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
@@ -15,18 +15,19 @@
   let filter = $state(start.filter);
   let q = $state(start.q);
   let sort = $state(start.sort);
+  let channel = $state(start.channel);
   let limit = $state(100);
   let adding = $state(false);
   let draft = $state({ business: '', contact: '', phone: '', suburb: '' });
 
-  const query = $derived(viewQuery({ filter, sort, q }));
+  const query = $derived(viewQuery({ filter, sort, q, channel }));
   $effect(() => {
     const want = query;
     if (want !== page.url.search) goto(page.url.pathname + want, { replaceState: true, keepFocus: true, noScroll: true });
   });
 
-  const counts = $derived(Object.fromEntries(FILTERS.map((f) => [f.key, leads.filter((l) => f.test(l, today)).length])));
-  const shown = $derived(listLeads(leads, { filter, q, sort }, today));
+  const counts = $derived(Object.fromEntries(FILTERS.map((f) => [f.key, listLeads(leads, { filter: f.key, q: '', sort, channel }, today).length])));
+  const shown = $derived(listLeads(leads, { filter, q, sort, channel }, today));
 
   async function add() {
     try {
@@ -54,6 +55,10 @@
         <Icon name="search" size={16} />
         <input bind:value={q} placeholder="Business, name, suburb or number" aria-label="Search leads" />
       </label>
+      <select bind:value={channel} aria-label="Contacted by">
+        <option value="">Any contact</option>
+        {#each CHANNELS as c}<option value={c.key}>{c.key === 'call' ? 'Called' : c.key === 'sms' ? 'Texted' : 'Emailed'}</option>{/each}
+      </select>
       <select bind:value={sort} aria-label="Sort leads">
         {#each SORTS as s}<option value={s.key}>{s.label}</option>{/each}
       </select>
@@ -108,6 +113,8 @@
     <div class="empty">
       {#if q.trim()}
         No lead matches "{q.trim()}".
+      {:else if channel}
+        No lead in this list has been {channel === 'call' ? 'called' : channel === 'sms' ? 'texted' : 'emailed'} yet.
       {:else if !leads.length}
         <strong>No leads on this offer yet.</strong> Import your spreadsheet, or add one by hand.
       {:else}

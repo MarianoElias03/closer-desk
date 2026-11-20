@@ -2,15 +2,25 @@
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { ENTRY_TYPES, entryType, whenLabel, wallClock, sinceLabel } from '$lib/leads.js';
+  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
 
   let { lead, tz, today } = $props();
 
   // newest first; sheet history with no date goes last
-  const entries = $derived([...lead.dials].reverse());
+  let show = $state('');
+  const all = $derived([...lead.dials].reverse());
+  const entries = $derived(show ? all.filter((d) => d.channel === show) : all);
+  const byChannel = $derived(Object.fromEntries(CHANNELS.map((c) => [c.key, all.filter((d) => d.channel === c.key).length])));
   const outcome = entryType;
-  const countable = (k) => !!k && k !== 'inbound';
+  // only calls you made can go in the Dialling numbers
+  const countable = (f) => f.channel === 'call' && !!f.outcome && f.outcome !== 'inbound';
+  const whyNot = (f) =>
+    f.channel !== 'call'
+      ? `${channelOf(f.channel).plural} don't count on Dialling, but still show as contact`
+      : f.outcome === 'inbound'
+        ? "Inbound calls don't count on Dialling"
+        : "Notes don't count on Dialling";
 
   let adding = $state(false);
   let draft = $state(blankDraft());
@@ -18,9 +28,9 @@
   let form = $state({});
   let busy = $state(false);
 
-  function blankDraft() {
+  function blankDraft(channel = 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, outcome: 'no_answer', note: '', counted: false };
+    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', note: '', counted: false };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -47,8 +57,9 @@
 
   async function add(e) {
     e.preventDefault();
-    const body = { ...draft, counted: countable(draft.outcome) && draft.counted };
-    if (await send(`/api/leads/${lead.id}/history`, 'POST', body, draft.outcome === 'inbound' ? 'Inbound call added' : 'Added to their history')) {
+    const body = { ...draft, counted: countable(draft) && draft.counted };
+    const what = draft.outcome === 'inbound' ? `${entryLabel('inbound', draft.channel)}, added` : `${channelOf(draft.channel).label} added to their history`;
+    if (await send(`/api/leads/${lead.id}/history`, 'POST', body, what)) {
       adding = false;
       draft = blankDraft();
     }
@@ -56,11 +67,11 @@
   function startEdit(d) {
     editing = d.id;
     const w = d.date ? wallClock(d.at, tz) : { date: today, time: '' };
-    form = { ...w, outcome: d.outcome || '', note: d.note, counted: d.counted };
+    form = { ...w, channel: d.channel, outcome: d.outcome || '', note: d.note, counted: d.counted };
   }
   async function save(e, d) {
     e.preventDefault();
-    const body = { ...form, counted: countable(form.outcome) && form.counted };
+    const body = { ...form, counted: countable(form) && form.counted };
     if (await send(`/api/leads/${lead.id}/dials/${d.id}`, 'PATCH', body, 'Entry updated')) editing = null;
   }
   async function remove(d) {
@@ -68,6 +79,34 @@
     send(`/api/leads/${lead.id}/dials/${d.id}`, 'DELETE', null, 'Entry removed');
   }
 </script>
+
+{#snippet fields(f, label, cancel)}
+  <div class="chan" role="radiogroup" aria-label="How it happened">
+    {#each CHANNELS as c}
+      <button type="button" role="radio" aria-checked={f.channel === c.key} class:on={f.channel === c.key} onclick={() => (f.channel = c.key)}>
+        <Icon name={c.icon} size={14} />{c.label}
+      </button>
+    {/each}
+  </div>
+  <label class="field">Date<input type="date" bind:value={f.date} max={today} required /></label>
+  <label class="field">Time<input type="time" bind:value={f.time} /></label>
+  <label class="field">What happened
+    <select bind:value={f.outcome}>
+      {#each ENTRY_TYPES as o}<option value={o.key}>{entryLabel(o.key, f.channel)}</option>{/each}
+      <option value="">{f.channel === 'call' ? 'Other (note only)' : f.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</option>
+    </select>
+  </label>
+  <label class="field wide">Note<input bind:value={f.note} placeholder={f.channel === 'call' ? 'Spoke to his wife, owner back Friday...' : 'What you sent or what they said'} /></label>
+  {#if countable(f)}
+    <label class="check"><input type="checkbox" bind:checked={f.counted} />Count it on Dialling for that day</label>
+  {:else}
+    <span class="check faint">{whyNot(f)}</span>
+  {/if}
+  <div class="btns">
+    <button type="button" class="btn small ghost" onclick={cancel}>Cancel</button>
+    <button class="btn small primary" disabled={busy}><Icon name="check" size={14} />{label}</button>
+  </div>
+{/snippet}
 
 <div class="hist">
   <div class="top">
@@ -78,30 +117,24 @@
       <span class="last faint">No contact with a date yet</span>
     {/if}
     <button class="btn small" onclick={inbound}><Icon name="phone" size={14} />They called in</button>
-    <button class="btn small" onclick={() => (adding = !adding)} aria-expanded={adding}><Icon name="plus" size={14} />Add contact</button>
+    <button class="btn small" onclick={() => ((draft = blankDraft()), (adding = !adding))} aria-expanded={adding}><Icon name="plus" size={14} />Add contact</button>
   </div>
 
   {#if adding}
     <form class="entry-form" transition:slide={{ duration: 180 }} onsubmit={add}>
-      <label class="field">Date<input type="date" bind:value={draft.date} max={today} required /></label>
-      <label class="field">Time<input type="time" bind:value={draft.time} /></label>
-      <label class="field">What happened
-        <select bind:value={draft.outcome}>
-          {#each ENTRY_TYPES as o}<option value={o.key}>{o.label}</option>{/each}
-          <option value="">Other (note only)</option>
-        </select>
-      </label>
-      <label class="field wide">Note<input bind:value={draft.note} placeholder="Texted the quote, spoke to his wife, emailed..." /></label>
-      {#if countable(draft.outcome)}
-        <label class="check"><input type="checkbox" bind:checked={draft.counted} />Count it on Dialling for that day</label>
-      {:else}
-        <span class="check faint">{draft.outcome === 'inbound' ? "Inbound calls don't count on Dialling" : "Notes don't count on Dialling"}</span>
-      {/if}
-      <div class="btns">
-        <button type="button" class="btn small ghost" onclick={() => (adding = false)}>Cancel</button>
-        <button class="btn small primary" disabled={busy}><Icon name="check" size={14} />Add</button>
-      </div>
+      {@render fields(draft, 'Add', () => (adding = false))}
     </form>
+  {/if}
+
+  {#if all.length && Object.values(byChannel).filter(Boolean).length > 1}
+    <div class="filter" role="tablist" aria-label="Show contacts by">
+      <button role="tab" aria-selected={!show} class:on={!show} onclick={() => (show = '')}>All<span class="n">{all.length}</span></button>
+      {#each CHANNELS.filter((c) => byChannel[c.key]) as c}
+        <button role="tab" aria-selected={show === c.key} class:on={show === c.key} onclick={() => (show = c.key)}>
+          <Icon name={c.icon} size={13} />{c.plural}<span class="n">{byChannel[c.key]}</span>
+        </button>
+      {/each}
+    </div>
   {/if}
 
   {#if entries.length}
@@ -112,32 +145,15 @@
           <i class="dot"></i>
           {#if editing === d.id}
             <form class="entry-form" onsubmit={(e) => save(e, d)}>
-              <label class="field">Date<input type="date" bind:value={form.date} required /></label>
-              <label class="field">Time<input type="time" bind:value={form.time} /></label>
-              <label class="field">What happened
-                <select bind:value={form.outcome}>
-                  {#each ENTRY_TYPES as x}<option value={x.key}>{x.label}</option>{/each}
-                  <option value="">Other (note only)</option>
-                </select>
-              </label>
-              <label class="field wide">Note<input bind:value={form.note} /></label>
-              {#if countable(form.outcome)}
-                <label class="check"><input type="checkbox" bind:checked={form.counted} />Count it on Dialling for that day</label>
-              {:else}
-                <span class="check faint">{form.outcome === 'inbound' ? "Inbound calls don't count on Dialling" : "Notes don't count on Dialling"}</span>
-              {/if}
-              <div class="btns">
-                <button type="button" class="btn small ghost" onclick={() => (editing = null)}>Cancel</button>
-                <button class="btn small primary" disabled={busy}><Icon name="check" size={14} />Save</button>
-              </div>
+              {@render fields(form, 'Save', () => (editing = null))}
             </form>
           {:else}
             <div class="what">
-              <span class="when">{d.date ? whenLabel(d.at, tz) : 'Date not recorded'}</span>
+              <span class="when"><Icon name={channelOf(d.channel).icon} size={12} />{channelOf(d.channel).label}, {d.date ? whenLabel(d.at, tz) : 'date not recorded'}</span>
               <span>
-                <strong>{o?.label || 'Note'}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}{#if d.note}<span class="muted">, "{d.note}"</span>{/if}
+                <strong>{d.outcome || d.channel === 'call' ? entryLabel(d.outcome, d.channel) : d.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</strong>{#if d.label && !d.date}<span class="faint">, from your sheet ({d.label})</span>{/if}{#if d.note}<span class="muted">, "{d.note}"</span>{/if}
               </span>
-              {#if d.outcome === 'inbound'}<span class="tag faint">they called you, not in Dialling numbers</span>{:else if !d.counted}<span class="tag faint">not in Dialling numbers</span>{/if}
+              {#if d.counted}<span class="tag faint">in Dialling numbers</span>{/if}
             </div>
             <div class="row-btns">
               <button class="ico" onclick={() => startEdit(d)} aria-label="Edit this entry"><Icon name="edit" size={14} /></button>
@@ -147,6 +163,8 @@
         </li>
       {/each}
     </ol>
+  {:else if all.length}
+    <p class="faint small">No {channelOf(show).plural.toLowerCase()} with this lead yet.</p>
   {:else}
     <p class="faint small">Nothing yet. Dials from the dialler land here with their date and time.</p>
   {/if}
@@ -188,6 +206,46 @@
     background: var(--surface);
     border: 1px solid var(--line-2);
     width: 100%;
+  }
+  .chan,
+  .filter {
+    grid-column: 1 / -1;
+    display: inline-flex;
+    justify-self: start;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--iron-soft);
+  }
+  .chan button,
+  .filter button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--ink-2);
+  }
+  .chan button.on,
+  .filter button.on {
+    background: var(--raised);
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+  .filter .n {
+    font-size: 11.5px;
+    color: var(--ink-3);
+  }
+  .when {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
   .field select {
     height: 40px;

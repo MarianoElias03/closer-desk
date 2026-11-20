@@ -597,6 +597,8 @@ CREATE TABLE IF NOT EXISTS lead_dials (
 CREATE INDEX IF NOT EXISTS lead_dials_lead ON lead_dials(lead_id);
 `);
 if (!hasColumn('lead_dials', 'prev_follow_up')) db.exec('ALTER TABLE lead_dials ADD COLUMN prev_follow_up TEXT');
+// how the contact happened: everything before this column existed was a phone call
+if (!hasColumn('lead_dials', 'channel')) db.exec("ALTER TABLE lead_dials ADD COLUMN channel TEXT NOT NULL DEFAULT 'call'");
 
 export const DIAL_OUTCOMES = SDR_FIELDS;
 
@@ -671,14 +673,14 @@ function shapeColdLead(r, dials) {
     call,
     stage,
     dials,
-    attempts: dials.filter((d) => d.outcome !== 'inbound').length,
+    attempts: dials.filter((d) => d.channel === 'call' && d.outcome !== 'inbound').length,
     lastDialOn: dials.filter((d) => d.date).at(-1)?.date || null,
     lastContactAt: dials.filter((d) => d.date).at(-1)?.at || null,
     updatedAt: r.updated_at
   };
 }
 
-const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, label: d.label, note: d.note, counted: !!d.counted, at: d.at });
+const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, channel: d.channel || 'call', label: d.label, note: d.note, counted: !!d.counted, at: d.at });
 
 export function getColdLead(offerId, id) {
   const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
@@ -798,7 +800,7 @@ export function importColdLeads(offerId, rows) {
     const byEmail = new Map(existing.filter((l) => l.email).map((l) => [l.email.toLowerCase(), l]));
     const byName = new Map(existing.filter((l) => l.business).map((l) => [l.business.toLowerCase(), l]));
     const hasHistory = db.prepare("SELECT 1 FROM lead_dials WHERE lead_id = ? AND counted = 0 AND label != '' LIMIT 1");
-    const addHistory = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, label, counted, at) VALUES(?, ?, NULL, ?, ?, 0, ?)");
+    const addHistory = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, label, counted, at) VALUES(?, ?, NULL, ?, ?, ?, 0, ?)");
     const now = new Date().toISOString();
     for (const raw of (rows || []).slice(0, 5000)) {
       const f = leadFields(raw);
@@ -832,7 +834,7 @@ export function importColdLeads(offerId, rows) {
         out.added++;
       }
       const history = (Array.isArray(raw.history) ? raw.history : []).map((h) => String(h ?? '').trim().slice(0, 200)).filter(Boolean);
-      if (history.length && !hasHistory.get(id)) for (const h of history) addHistory.run(id, offerId, guessOutcome(h.replace(/^[^:]*:\s*/, '')), h, now);
+      if (history.length && !hasHistory.get(id)) for (const h of history) addHistory.run(id, offerId, guessOutcome(h.replace(/^[^:]*:\s*/, '')), guessChannel(h), h, now);
     }
   })();
   return out;
@@ -894,6 +896,8 @@ export function linkableCalls(offerId, fromIso) {
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const ENTRY_TYPES = [...SDR_FIELDS, 'inbound'];
+export const CHANNELS = ['call', 'sms', 'email'];
+const guessChannel = (t) => (/\b(sms|texts?|texted|txt)\b/i.test(t) ? 'sms' : /e-?mail/i.test(t) ? 'email' : 'call');
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 /** Wall-clock date + time in the business timezone -> ISO instant. */
@@ -908,11 +912,12 @@ function entryFields(e) {
   if (!DATE_RE.test(e.date || '')) throw new Error('Pick the date it happened');
   const outcome = e.outcome ? String(e.outcome) : null;
   if (outcome && !ENTRY_TYPES.includes(outcome)) throw new Error('Unknown outcome');
-  // an inbound call is them ringing you, so it never goes in the dial numbers
-  const counted = !!e.counted && outcome !== 'inbound';
+  const channel = CHANNELS.includes(e.channel) ? e.channel : 'call';
+  // only calls you made go in the dial numbers: not texts, emails, or them ringing you
+  const counted = !!e.counted && channel === 'call' && outcome !== 'inbound';
   if (counted && !outcome) throw new Error('Pick an outcome to count it on Dialling');
   const at = atFrom(e.date, e.time);
-  return { date: dayKey(at, getSettings().timezone), at, outcome, counted, note: String(e.note ?? '').slice(0, 1000) };
+  return { date: dayKey(at, getSettings().timezone), at, outcome, channel, counted, note: String(e.note ?? '').slice(0, 1000) };
 }
 
 export function addLeadEntry(offerId, leadId, e) {
@@ -920,8 +925,8 @@ export function addLeadEntry(offerId, leadId, e) {
   return db.transaction(() => {
     const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, note, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(
-      l.id, offerId, f.date, f.outcome, f.note, f.counted ? 1 : 0, f.at
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, note, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)').run(
+      l.id, offerId, f.date, f.outcome, f.channel, f.note, f.counted ? 1 : 0, f.at
     );
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
     db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
@@ -934,11 +939,11 @@ export function updateLeadEntry(offerId, leadId, dialId, e) {
     const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
     if (!d) return null;
     const was = d.date ? wallClock(d.at, getSettings().timezone) : {};
-    const f = entryFields({ ...was, outcome: d.outcome, note: d.note, counted: !!d.counted, ...e });
+    const f = entryFields({ ...was, outcome: d.outcome, channel: d.channel, note: d.note, counted: !!d.counted, ...e });
     if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
     if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
-    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, note = ?, counted = ? WHERE id = ?').run(
-      f.date, f.at, f.outcome, f.note, f.counted ? 1 : 0, d.id
+    db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, channel = ?, note = ?, counted = ? WHERE id = ?').run(
+      f.date, f.at, f.outcome, f.channel, f.note, f.counted ? 1 : 0, d.id
     );
     return getColdLead(offerId, leadId);
   })();

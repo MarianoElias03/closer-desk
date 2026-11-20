@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType } from '$lib/leads.js';
+  import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf } from '$lib/leads.js';
   import { ddmm } from '$lib/fmt.js';
 
   /** The top of a lead: score, name, status, call button, pitch angle and research, past calls. */
@@ -70,7 +70,7 @@
     <ol class="hist" aria-label="Past dials">
       {#each lead.dials as d}
         <li class="t-{entryType(d.outcome)?.tone || 'none'}">
-          <i></i>{d.date ? `${whenLabel(d.at, tz, false)}: ${entryType(d.outcome)?.label || 'Note'}` : d.label}{d.note ? `, "${d.note}"` : ''}
+          <i></i>{d.channel !== 'call' ? `${channelOf(d.channel).label}, ` : ''}{d.date ? `${whenLabel(d.at, tz, false)}: ${entryLabel(d.outcome, d.channel)}` : d.label}{d.note ? `, "${d.note}"` : ''}
         </li>
       {/each}
     </ol>

@@ -5,6 +5,25 @@ import { SDR_OUTCOMES } from './stats.js';
 export const ENTRY_TYPES = [...SDR_OUTCOMES, { key: 'inbound', label: 'Inbound call', short: 'Inbound', tone: 'green' }];
 export const entryType = (k) => ENTRY_TYPES.find((o) => o.key === k);
 
+/** How a contact happened. Only calls you make can count on Dialling. */
+export const CHANNELS = [
+  { key: 'call', label: 'Call', plural: 'Calls', icon: 'phone' },
+  { key: 'sms', label: 'SMS', plural: 'SMS', icon: 'chat' },
+  { key: 'email', label: 'Email', plural: 'Emails', icon: 'mail' }
+];
+export const channelOf = (k) => CHANNELS.find((c) => c.key === k) || CHANNELS[0];
+
+// the same outcome reads differently over text or email
+const WRITTEN = {
+  sms: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They texted you', wrong_no: 'Wrong number' },
+  email: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They emailed you', wrong_no: 'Bounced' }
+};
+/** Label for an outcome on a channel, e.g. "No reply" for an SMS that got no answer. */
+export function entryLabel(outcome, channel = 'call') {
+  if (!outcome) return 'Note';
+  return WRITTEN[channel]?.[outcome] || entryType(outcome)?.label || 'Note';
+}
+
 export const STAGES = {
   new: { label: 'Not called', tone: 'none' },
   no_answer: { label: 'No answer', tone: 'iron' },
@@ -309,16 +328,19 @@ export const SORTS = [
 export function listView(params) {
   const f = params.get('f');
   const s = params.get('s');
+  const c = params.get('c');
   return {
     filter: FILTERS.some((x) => x.key === f) ? f : 'queue',
     sort: SORTS.some((x) => x.key === s) ? s : 'score',
-    q: (params.get('q') || '').slice(0, 100)
+    q: (params.get('q') || '').slice(0, 100),
+    channel: CHANNELS.some((x) => x.key === c) ? c : ''
   };
 }
-export function viewQuery({ filter, sort, q }) {
+export function viewQuery({ filter, sort, q, channel = '' }) {
   const p = new URLSearchParams();
   if (filter !== 'queue') p.set('f', filter);
   if (sort !== 'score') p.set('s', sort);
+  if (channel) p.set('c', channel);
   if (q.trim()) p.set('q', q.trim());
   const s = p.toString();
   return s ? '?' + s : '';
@@ -332,7 +354,11 @@ function matches(l, q) {
   return [l.business, l.contact, l.suburb, l.category, l.email, l.notes].some((s) => s.toLowerCase().includes(needle));
 }
 
-const sorted = (leads, { sort, q }) => leads.filter((l) => matches(l, q)).sort(SORTS.find((s) => s.key === sort).cmp);
+/** Leads you've been in touch with over a channel at least once. */
+export const usedChannel = (l, channel) => !channel || l.dials.some((d) => d.channel === channel);
+
+const sorted = (leads, { sort, q, channel }) =>
+  leads.filter((l) => matches(l, q) && usedChannel(l, channel)).sort(SORTS.find((s) => s.key === sort).cmp);
 
 export function listLeads(leads, view, today) {
   const f = FILTERS.find((x) => x.key === view.filter);
