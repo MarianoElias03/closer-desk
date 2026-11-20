@@ -90,6 +90,17 @@
       press(SDR_OUTCOMES[i]);
     }
   }
+  // the note wraps and grows as you type (field-sizing where the browser has it, this otherwise);
+  // it also shrinks back once the note clears after logging
+  function grow(el) {
+    const fit = () => {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight + 2, window.innerHeight * 0.5) + 'px';
+    };
+    queueMicrotask(fit);
+    el.addEventListener('input', fit);
+    return { update: () => queueMicrotask(fit), destroy: () => el.removeEventListener('input', fit) };
+  }
   const quick = [
     ['Tomorrow', 1],
     ['In 2 days', 2],
@@ -105,7 +116,13 @@
   {/if}
   <label class="field">
     <span class="sr-only">Note from this call</span>
-    <input bind:value={note} placeholder="Note from this call (optional), e.g. spoke to receptionist, owner back Friday" />
+    <textarea
+      class="note"
+      rows="1"
+      use:grow={note}
+      bind:value={note}
+      placeholder="Note from this call (optional), e.g. spoke to receptionist, owner back Friday"
+    ></textarea>
   </label>
 
   <div class="pads">
@@ -165,6 +182,14 @@
     color: var(--ink);
     font-size: 13.5px;
     font-weight: 600;
+  }
+  .field textarea.note {
+    min-height: 0;
+    max-height: 50vh;
+    resize: none;
+    overflow-y: auto;
+    field-sizing: content;
+    line-height: 1.45;
   }
   .pads {
     display: grid;
