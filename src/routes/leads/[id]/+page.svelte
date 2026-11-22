@@ -6,7 +6,7 @@
   import LeadPad from '$lib/components/LeadPad.svelte';
   import LeadHistory from '$lib/components/LeadHistory.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
-  import { FILTERS, leadName, linkFor, viewQuery, consentLabel } from '$lib/leads.js';
+  import { FILTERS, leadName, linkFor, viewQuery, consentLabel, calendarNote } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
@@ -51,7 +51,8 @@
     if (lead.followUp) {
       const label = lead.stage === 'callback' ? 'Callback' : lead.stage === 'booked' ? 'Booked for' : 'Follow up';
       const due = lead.followUp <= data.today;
-      return { label, text: dayLong(lead.followUp) + (lead.followUp === data.today ? ' (today)' : due ? ' (overdue)' : ''), tone: due ? 'yellow' : 'none' };
+      const at = lead.stage === 'callback' ? lead.dials.filter((d) => d.outcome === 'callback').at(-1)?.cbTime : null;
+      return { label, text: dayLong(lead.followUp) + (at ? ` at ${at}` : '') + (lead.followUp === data.today ? ' (today)' : due ? ' (overdue)' : ''), tone: due ? 'yellow' : 'none' };
     }
     if (lead.stage === 'booked') return { label: 'Booked', text: 'Waiting for the call to show up on your calendar', tone: 'none' };
     return null;
@@ -69,8 +70,8 @@
     saving = true;
     try {
       const { followUp, ...rest } = form;
-      await api(`/api/leads/${lead.id}`, 'PATCH', callSetsDate ? rest : form);
-      toast(`${leadName({ ...lead, ...form })} saved`);
+      const j = await api(`/api/leads/${lead.id}`, 'PATCH', callSetsDate ? rest : form);
+      toast(`${leadName({ ...lead, ...form })} saved${calendarNote(j.calendar)}`, j.calendar?.error ? 'error' : undefined);
       await invalidateAll();
       editing = false;
     } catch (e) {
@@ -83,8 +84,8 @@
     const n = lead.dials.filter((d) => d.counted).length;
     if (!confirm(`Delete ${leadName(lead)}?${n ? ` Its ${n} counted ${n === 1 ? 'dial comes' : 'dials come'} off your Dialling numbers too.` : ''}`)) return;
     try {
-      await api(`/api/leads/${lead.id}`, 'DELETE');
-      toast(`Deleted ${leadName(lead)}`);
+      const j = await api(`/api/leads/${lead.id}`, 'DELETE');
+      toast(`Deleted ${leadName(lead)}${calendarNote(j.calendar)}`);
       formFor = null;
       goto(data.nav.next ? href(data.nav.next) : `/leads${query}`, { invalidateAll: true });
     } catch (e) {

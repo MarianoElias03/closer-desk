@@ -610,6 +610,15 @@ if (!hasColumn('lead_dials', 'reason')) db.exec("ALTER TABLE lead_dials ADD COLU
 if (!hasColumn('leads', 'dnc')) db.exec("ALTER TABLE leads ADD COLUMN dnc TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('leads', 'dnc_note')) db.exec("ALTER TABLE leads ADD COLUMN dnc_note TEXT NOT NULL DEFAULT ''");
 if (!hasColumn('leads', 'dnc_at')) db.exec('ALTER TABLE leads ADD COLUMN dnc_at TEXT');
+// a callback's time of day (HH:MM, optional) and the calendar event that stands for it
+if (!hasColumn('lead_dials', 'cb_time')) db.exec('ALTER TABLE lead_dials ADD COLUMN cb_time TEXT');
+db.exec(`CREATE TABLE IF NOT EXISTS lead_cal (
+  lead_id INTEGER PRIMARY KEY,
+  offer_id INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
+  day TEXT NOT NULL,
+  sig TEXT NOT NULL
+)`);
 
 export const DIAL_OUTCOMES = SDR_FIELDS;
 
@@ -696,7 +705,7 @@ function shapeColdLead(r, dials) {
   };
 }
 
-const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, reason: d.reason || '', channel: d.channel || 'call', subject: d.subject || '', label: d.label, note: d.note, counted: !!d.counted, at: d.at, extId: d.ext_id || null });
+const shapeDial = (d) => ({ id: d.id, date: d.date, outcome: d.outcome, cbTime: d.cb_time || null, reason: d.reason || '', channel: d.channel || 'call', subject: d.subject || '', label: d.label, note: d.note, counted: !!d.counted, at: d.at, extId: d.ext_id || null });
 
 export function getColdLead(offerId, id) {
   const r = db.prepare(`${LEAD_SELECT} WHERE l.id = ? AND l.offer_id = ?`).get(Number(id), offerId);
@@ -773,17 +782,20 @@ export function deleteColdLead(offerId, id) {
 }
 
 /** Log one dial on a lead. It counts on `date` in the SDR tallies. */
-export function logDial(offerId, leadId, { outcome, date, followUp, note, reason }) {
+const cleanTime = (t) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(t || '') ? t : null);
+
+export function logDial(offerId, leadId, { outcome, date, followUp, followUpTime, note, reason }) {
   if (!SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
   return db.transaction(() => {
     const l = db.prepare('SELECT id, follow_up FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, ?, 1, ?, ?)').run(
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, cb_time, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?)').run(
       l.id,
       offerId,
       date,
       outcome,
       cleanReason(reason),
+      outcome === 'callback' ? cleanTime(followUpTime) : null,
       String(note || '').slice(0, 1000),
       l.follow_up,
       // stamped now, unless it's being logged for another day
@@ -1000,7 +1012,7 @@ export function addLeadEntry(offerId, leadId, e) {
     // a callback added by hand sets the lead's follow-up date (undo puts the old one back)
     const fu = f.outcome === 'callback' && /^\d{4}-\d{2}-\d{2}$/.test(e.followUp || '') ? e.followUp : null;
     if (fu) {
-      db.prepare('UPDATE lead_dials SET prev_follow_up = ? WHERE id = ?').run(l.follow_up, ins.lastInsertRowid);
+      db.prepare('UPDATE lead_dials SET prev_follow_up = ?, cb_time = ? WHERE id = ?').run(l.follow_up, cleanTime(e.followUpTime), ins.lastInsertRowid);
       db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(fu, new Date().toISOString(), l.id);
     } else db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
     return getColdLead(offerId, l.id);

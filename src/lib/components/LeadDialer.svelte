@@ -5,7 +5,7 @@
   import LeadSummary from './LeadSummary.svelte';
   import LeadPad from './LeadPad.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { dialQueue, isDue, leadName } from '$lib/leads.js';
+  import { dialQueue, isDue, leadName, calendarNote } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
 
   let { leads, today, tz, reasons = {}, currentId = $bindable(null) } = $props();
@@ -32,9 +32,10 @@
     try {
       const r = await fetch(`/api/leads/${u.leadId}/dials/${u.dialId}`, { method: 'DELETE' });
       if (!r.ok) throw new Error();
+      const j = await r.json().catch(() => ({}));
       last = null;
       currentId = u.leadId;
-      toast(`Took back the ${SDR_OUTCOMES.find((o) => o.key === u.outcome).label.toLowerCase()} on ${u.name}`);
+      toast(`Took back the ${SDR_OUTCOMES.find((o) => o.key === u.outcome).label.toLowerCase()} on ${u.name}${calendarNote(j.calendar)}`);
       await invalidateAll();
     } catch {
       toast('Could not undo that dial', 'error');

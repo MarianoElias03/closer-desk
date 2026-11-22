@@ -2,7 +2,7 @@
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions } from '$lib/leads.js';
+  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions, calendarNote } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
   import { addDays } from '$lib/time.js';
 
@@ -32,7 +32,7 @@
 
   function blankDraft(channel = 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false, followUp: addDays(now.date, 1) };
+    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false, followUp: addDays(now.date, 1), followUpTime: '' };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -46,7 +46,7 @@
       const r = await fetch(path, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.message || 'Could not save');
-      toast(msg);
+      toast(msg + calendarNote(j.calendar), j.calendar?.error ? 'error' : undefined);
       await invalidateAll();
       return true;
     } catch (e) {
@@ -122,6 +122,7 @@
   {/if}
   {#if f.outcome === 'callback' && 'followUp' in f}
     <label class="field">Call back on<input type="date" bind:value={f.followUp} min={today} required /></label>
+    <label class="field">At (optional)<input type="time" bind:value={f.followUpTime} title="Without a time it goes on your calendar as all day" /></label>
   {/if}
   {#if f.channel === 'email'}
     <label class="field wide">Subject<input bind:value={f.subject} placeholder="Subject line" /></label>

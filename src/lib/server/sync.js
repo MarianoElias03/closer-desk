@@ -1,4 +1,5 @@
 import { db, getSettings, setSetting, listOffers, resolveOffer, linkLeadCalls } from './db.js';
+import { syncCallbackEvents } from './callbackCal.js';
 
 const env = process.env;
 
@@ -6,7 +7,7 @@ const env = process.env;
 
 let gToken = { value: null, exp: 0 };
 
-async function googleAccessToken() {
+export async function googleAccessToken() {
   if (gToken.value && Date.now() < gToken.exp - 60_000) return gToken.value;
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_REFRESH_TOKEN) {
     throw new Error('Google Calendar is not connected. Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN to the server .env.');
@@ -102,6 +103,7 @@ export async function syncCalendar() {
       for (const ev of items) {
         seen++;
         const title = ev.summary || '';
+        if (ev.extendedProperties?.private?.closerDeskLead) continue; // our own callback reminders
         const hit = match(title);
         if (!hit || !ev.start?.dateTime) continue;
         const { kind, offerId } = hit;
@@ -246,6 +248,11 @@ export async function syncAll() {
     out.linked = linkRecordings();
     try {
       out.leadsLinked = linkLeadCalls();
+    } catch (e) {
+      out.errors.push(String(e.message || e));
+    }
+    try {
+      out.callbacks = await syncCallbackEvents();
     } catch (e) {
       out.errors.push(String(e.message || e));
     }

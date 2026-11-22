@@ -505,3 +505,13 @@ export function neighbours(leads, id, view, today) {
     total: before.length + after.length + (here ? 1 : 0)
   };
 }
+
+/** What a save did to the callback on your calendar, to tack onto its toast. */
+export function calendarNote(cal) {
+  if (!cal) return '';
+  if (cal.error) return `. ${cal.error}`;
+  if (cal.added) return ', added to your calendar';
+  if (cal.moved) return ', moved on your calendar';
+  if (cal.removed) return ', taken off your calendar';
+  return '';
+}

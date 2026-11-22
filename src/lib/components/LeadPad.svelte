@@ -3,7 +3,7 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { leadName, reasonOptions } from '$lib/leads.js';
+  import { leadName, reasonOptions, calendarNote } from '$lib/leads.js';
   import { dayLabel } from '$lib/fmt.js';
   import { addDays } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
@@ -18,6 +18,7 @@
   let note = $state('');
   let pending = $state(null); // outcome key waiting for its reason
   let cbDate = $state('');
+  let cbTime = $state('');
   let other = $state('');
 
   let lastId = null;
@@ -41,17 +42,19 @@
       const r = await fetch(`/api/leads/${lead.id}/dials`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ outcome, followUp, reason, note: note.trim() })
+        body: JSON.stringify({ outcome, followUp, followUpTime: followUp ? cbTime : '', reason, note: note.trim() })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save that dial');
       const label = SDR_OUTCOMES.find((o) => o.key === outcome).label.toLowerCase();
       toast(
-        `${leadName(lead)}: ${label}${reason ? `, ${reason.toLowerCase()}` : ''}${followUp ? `, call back ${dayLabel(followUp, { weekday: 'short', day: 'numeric', month: 'short' })}` : ''}`
+        `${leadName(lead)}: ${label}${reason ? `, ${reason.toLowerCase()}` : ''}${followUp ? `, call back ${dayLabel(followUp, { weekday: 'short', day: 'numeric', month: 'short' })}${cbTime ? ` at ${cbTime}` : ''}` : ''}${calendarNote(j.calendar)}`,
+        j.calendar?.error ? 'error' : undefined
       );
       note = '';
       pending = null;
       other = '';
+      cbTime = '';
       const dialId = Math.max(...j.lead.dials.map((d) => d.id));
       await onlogged?.({ lead: j.lead, dialId, outcome, name: leadName(lead) });
       await invalidateAll();
@@ -143,6 +146,7 @@
             <button class="btn small" class:primary={cbDate === addDays(today, n)} onclick={() => (cbDate = addDays(today, n))}>{label}</button>
           {/each}
           <input type="date" bind:value={cbDate} min={today} aria-label="Callback date" />
+          <input type="time" bind:value={cbTime} aria-label="Callback time (optional)" title="Time (optional). Without one it goes on your calendar as all day" />
         </div>
       {/if}
       <div class="wtop">

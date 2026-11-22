@@ -1,7 +1,9 @@
 import { json, error } from '@sveltejs/kit';
 import { removeDial, updateLeadEntry } from '$lib/server/db.js';
-export function DELETE({ params, locals }) {
-  return json({ lead: removeDial(locals.offer.id, params.id, params.dialId) });
+import { callbackCalendarFor } from '$lib/server/callbackCal.js';
+export async function DELETE({ params, locals }) {
+  const lead = removeDial(locals.offer.id, params.id, params.dialId);
+  return json({ lead, calendar: await callbackCalendarFor(params.id) });
 }
 export async function PATCH({ params, request, locals }) {
   const b = await request.json();
@@ -12,5 +14,5 @@ export async function PATCH({ params, request, locals }) {
     error(400, e.message);
   }
   if (!lead) error(404, 'Entry not found');
-  return json({ lead });
+  return json({ lead, calendar: await callbackCalendarFor(params.id) });
 }

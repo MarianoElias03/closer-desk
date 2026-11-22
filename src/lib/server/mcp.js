@@ -214,6 +214,8 @@ const contactProps = {
     type: 'string',
     description: 'The message id from the mail or SMS system. Logging the same id on the same lead twice is skipped, so re-importing is safe.'
   },
+  follow_up: { type: 'string', description: 'For outcome callback: the day to call back, YYYY-MM-DD (today or later). Sets the lead\'s follow-up date and puts the callback on the user\'s calendar.' },
+  follow_up_time: { type: 'string', description: 'For outcome callback: optional time to call back, HH:mm 24h. Without it the calendar entry is all day.' },
   count_on_dialling: { type: 'boolean', default: false }
 };
 
@@ -236,6 +238,8 @@ function logOne(offerId, a) {
     subject: a.subject || '',
     note: a.body ?? a.note ?? '',
     extId: a.external_id || null,
+    followUp: a.follow_up || null,
+    followUpTime: a.follow_up_time || null,
     counted: !!a.count_on_dialling
   });
   if (updated.duplicateOf) return { lead: brief(updated), duplicate: true, entry_id: updated.duplicateOf };
