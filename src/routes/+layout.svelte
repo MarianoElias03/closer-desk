@@ -7,6 +7,7 @@
   import { toast } from '$lib/toast.svelte.js';
   import { relative } from '$lib/fmt.js';
   import OfferSwitcher from '$lib/components/OfferSwitcher.svelte';
+  import WorkTimer from '$lib/components/WorkTimer.svelte';
 
   let { data, children } = $props();
   let syncing = $state(false);
@@ -95,6 +96,7 @@
         </a>
       {/each}
     </nav>
+    <div class="timer"><WorkTimer offerId={data.offer.id} /></div>
     <button class="sync" onclick={sync} disabled={syncing} title="Pull calendar events and Fathom recordings now">
       <span class="spin" class:on={syncing}><Icon name="refresh" size={16} /></span>
       <span>
@@ -106,6 +108,7 @@
 
   <main class:loading={!!navigating.to}>
     <div class="offer-m"><OfferSwitcher offer={data.offer} offers={data.offers} compact /></div>
+    <div class="timer-m"><WorkTimer offerId={data.offer.id} compact /></div>
     {@render children()}
   </main>
 </div>
@@ -209,8 +212,14 @@
     border-radius: 0 4px 4px 0;
     background: var(--blue);
   }
-  .sync {
+  .timer {
     margin-top: auto;
+    margin-bottom: 10px;
+  }
+  .timer-m {
+    display: none;
+  }
+  .sync {
     display: flex;
     gap: 10px;
     align-items: center;
@@ -266,10 +275,15 @@
     }
     .brand,
     .sync,
+    .timer,
     .offer {
       display: none;
     }
     .offer-m {
+      display: block;
+      margin-bottom: 10px;
+    }
+    .timer-m {
       display: block;
       margin-bottom: 16px;
     }
