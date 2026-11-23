@@ -1,6 +1,5 @@
-import { callsRange, getSettings, unlinkedRecordings } from '$lib/server/db.js';
-export function load({ locals }) {
-  const from = new Date(Date.now() - 120 * 864e5).toISOString();
-  const to = new Date(Date.now() + 60 * 864e5).toISOString();
-  return { calls: callsRange(locals.offer.id, from, to), recordings: unlinkedRecordings() };
+import { redirect } from '@sveltejs/kit';
+// Calls now lives inside the Closing tab; old links (?f=needs, ?open=<id>) still work
+export function load({ url }) {
+  redirect(308, `/closing${url.search}#calls`);
 }

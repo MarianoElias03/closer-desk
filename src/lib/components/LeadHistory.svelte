@@ -2,11 +2,11 @@
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
-  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions, calendarNote } from '$lib/leads.js';
+  import { ENTRY_TYPES, entryType, entryLabel, CHANNELS, channelOf, whenLabel, wallClock, sinceLabel, reasonOptions, calendarNote, typesFor, DM_KEYS } from '$lib/leads.js';
   import { toast } from '$lib/toast.svelte.js';
   import { addDays } from '$lib/time.js';
 
-  let { lead, tz, today, reasons = {} } = $props();
+  let { lead, tz, today, reasons = {}, mode = 'sdr' } = $props();
   const listId = `reasons-${Math.random().toString(36).slice(2, 8)}`;
 
   // newest first; sheet history with no date goes last
@@ -15,14 +15,15 @@
   const entries = $derived(show ? all.filter((d) => d.channel === show) : all);
   const byChannel = $derived(Object.fromEntries(CHANNELS.map((c) => [c.key, all.filter((d) => d.channel === c.key).length])));
   const outcome = entryType;
-  // only calls you made can go in the Dialling numbers
-  const countable = (f) => f.channel === 'call' && !!f.outcome && f.outcome !== 'inbound';
+  // only calls you made can go in the Dialling numbers, and DM outcomes in the DM Setting numbers
+  const countable = (f) => (f.channel === 'dm' ? DM_KEYS.includes(f.outcome) : f.channel === 'call' && !!f.outcome && !DM_KEYS.filter((k) => k !== 'booked').includes(f.outcome) && f.outcome !== 'inbound');
+  const board = (f) => (f.channel === 'dm' ? 'DM Setting' : 'Dialling');
   const whyNot = (f) =>
-    f.channel !== 'call'
+    f.channel === 'sms' || f.channel === 'email'
       ? `${channelOf(f.channel).plural} don't count on Dialling, but still show as contact`
       : f.outcome === 'inbound'
         ? "Inbound calls don't count on Dialling"
-        : "Notes don't count on Dialling";
+        : `Notes don't count on ${board(f)}`;
 
   let adding = $state(false);
   let draft = $state(blankDraft());
@@ -30,9 +31,9 @@
   let form = $state({});
   let busy = $state(false);
 
-  function blankDraft(channel = 'call') {
+  function blankDraft(channel = mode === 'dm' ? 'dm' : 'call') {
     const now = wallClock(new Date().toISOString(), tz);
-    return { ...now, channel, outcome: channel === 'call' ? 'no_answer' : '', reason: '', subject: '', note: '', counted: false, followUp: addDays(now.date, 1), followUpTime: '' };
+    return { ...now, channel, outcome: channel === 'call' && mode === 'sdr' ? 'no_answer' : channel === 'dm' ? 'contacted' : '', reason: '', subject: '', note: '', counted: false, followUp: addDays(now.date, 1), followUpTime: '' };
   }
   // they rang you: open the form already set to an inbound call at the current time
   function inbound() {
@@ -93,7 +94,7 @@
   const flip = (id) => (unfolded = unfolded.includes(id) ? unfolded.filter((x) => x !== id) : [...unfolded, id]);
 
   async function remove(d) {
-    if (d.counted && !confirm(`Remove this ${outcome(d.outcome)?.label.toLowerCase()}? It comes off that day's Dialling numbers.`)) return;
+    if (d.counted && !confirm(`Remove this ${outcome(d.outcome)?.label.toLowerCase()}? It comes off that day's ${d.channel === 'dm' ? 'DM Setting' : 'Dialling'} numbers.`)) return;
     send(`/api/leads/${lead.id}/dials/${d.id}`, 'DELETE', null, 'Entry removed');
   }
 </script>
@@ -101,7 +102,7 @@
 {#snippet fields(f, label, cancel)}
   <div class="chan" role="radiogroup" aria-label="How it happened">
     {#each CHANNELS as c}
-      <button type="button" role="radio" aria-checked={f.channel === c.key} class:on={f.channel === c.key} onclick={() => (f.channel = c.key)}>
+      <button type="button" role="radio" aria-checked={f.channel === c.key} class:on={f.channel === c.key} onclick={() => ((f.channel = c.key), typesFor(c.key).some((o) => o.key === f.outcome) || (f.outcome = ''))}>
         <Icon name={c.icon} size={14} />{c.label}
       </button>
     {/each}
@@ -110,8 +111,8 @@
   <label class="field">Time<input type="time" bind:value={f.time} /></label>
   <label class="field">What happened
     <select bind:value={f.outcome}>
-      {#each ENTRY_TYPES as o}<option value={o.key}>{entryLabel(o.key, f.channel)}</option>{/each}
-      <option value="">{f.channel === 'call' ? 'Other (note only)' : f.channel === 'sms' ? 'Sent a text' : 'Sent an email'}</option>
+      {#each typesFor(f.channel) as o}<option value={o.key}>{entryLabel(o.key, f.channel)}</option>{/each}
+      <option value="">{f.channel === 'call' ? 'Other (note only)' : entryLabel('', f.channel)}</option>
     </select>
   </label>
   {#if f.outcome}
@@ -136,7 +137,7 @@
     ></textarea>
   </label>
   {#if countable(f)}
-    <label class="check"><input type="checkbox" bind:checked={f.counted} />Count it on Dialling for that day</label>
+    <label class="check"><input type="checkbox" bind:checked={f.counted} />Count it on {board(f)} for that day</label>
   {:else}
     <span class="check faint">{whyNot(f)}</span>
   {/if}
@@ -154,7 +155,7 @@
     {:else}
       <span class="last faint">No contact with a date yet</span>
     {/if}
-    <button class="btn small" onclick={inbound}><Icon name="phone" size={14} />They called in</button>
+    {#if mode !== 'dm'}<button class="btn small" onclick={inbound}><Icon name="phone" size={14} />They called in</button>{/if}
     <button class="btn small" onclick={() => ((draft = blankDraft()), (adding = !adding))} aria-expanded={adding}><Icon name="plus" size={14} />Add contact</button>
   </div>
 
@@ -200,7 +201,7 @@
                   </button>
                 {/if}
               {/if}
-              {#if d.counted}<span class="tag faint">in Dialling numbers</span>{/if}
+              {#if d.counted}<span class="tag faint">in {d.channel === 'dm' ? 'DM Setting' : 'Dialling'} numbers</span>{/if}
             </div>
             <div class="row-btns">
               <button class="ico" onclick={() => startEdit(d)} aria-label="Edit this entry"><Icon name="edit" size={14} /></button>

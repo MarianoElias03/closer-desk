@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
-import { dayKey, dayStartIso } from '../time.js';
+import { dayKey, dayStartIso, addDays as addDaysKey } from '../time.js';
 import { wallClock } from '../leads.js';
 
 const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
@@ -409,6 +409,33 @@ export function createManualCall(offerId, c) {
   return getCall(id);
 }
 
+/**
+ * The Closing numbers for one day, worked out from that day's calls: each logged outcome counts in its
+ * column and the cash adds up. Runs whenever a call's outcome, cash or offer changes, so the Closing
+ * stats keep themselves up to date (there's no day-by-day table to type into any more).
+ */
+export function closeDayFromCalls(offerId, date) {
+  if (!offerId || !date) return null;
+  const tz = getSettings().timezone;
+  // days before this switched on keep the numbers you typed in from your sheet
+  let from = getSettings().close_auto_from;
+  if (!from) setSetting('close_auto_from', (from = dayKey(Date.now(), tz)));
+  if (date < from) return null;
+  const v = Object.fromEntries(CLOSE_FIELDS.map((k) => [k, 0]));
+  const rows = db
+    .prepare("SELECT outcome, cash FROM calls WHERE offer_id = ? AND start >= ? AND start < ? AND status != 'cancelled'")
+    .all(offerId, dayStartIso(date, tz), dayStartIso(addDaysKey(date, 1), tz));
+  for (const r of rows) {
+    const col = { no_show: 'no_show', closed: 'closed', not_interested: 'not_interested', callback: 'callbacks', unqualified: 'unqualified' }[r.outcome];
+    if (col) v[col]++;
+    v.cash += Number(r.cash) || 0;
+  }
+  return upsertClose(offerId, date, v);
+}
+
+// switched on the day this version first starts
+if (!getSettings().close_auto_from) setSetting('close_auto_from', dayKey(Date.now(), getSettings().timezone));
+
 export function deleteManualCall(id) {
   db.prepare("DELETE FROM calls WHERE id = ? AND source = 'manual'").run(id);
 }
@@ -452,39 +479,60 @@ function bumpDm(offerId, date, key, delta) {
   upsertDm(offerId, date, cur);
 }
 
-const shapeLead = (r) =>
-  r && {
+// DM Setting's lead list and tap pad now work on the CRM: each DM lead is a row in `leads` (the IG
+// handle or name is its contact) and each step is a counted DM entry in its history. These keep the
+// shape the DM pad and list always used. (The old dm_leads rows were copied in once and are kept, unused.)
+
+function dmEntries(leadId) {
+  return db.prepare("SELECT * FROM lead_dials WHERE lead_id = ? AND channel = 'dm' AND counted = 1 ORDER BY at, id").all(leadId);
+}
+
+function shapeDmLead(r) {
+  if (!r) return null;
+  const e = dmEntries(r.id);
+  const first = (k) => e.find((d) => d.outcome === k)?.date || null;
+  const end = e.filter((d) => d.outcome === 'converted' || d.outcome === 'not_converted').at(-1) || null;
+  const bookedOn = e.filter((d) => d.outcome === 'booked').at(-1)?.date || null;
+  return {
     id: r.id,
-    handle: r.handle,
-    contactedOn: r.contacted_on,
-    bookedOn: r.booked_on,
-    outcome: r.outcome,
-    outcomeOn: r.outcome_on,
-    status: r.outcome || (r.booked_on ? 'booked' : 'contacted'),
+    handle: r.contact || r.business || r.phone,
+    contactedOn: first('contacted') || r.created_at.slice(0, 10),
+    bookedOn,
+    outcome: end?.outcome || null,
+    outcomeOn: end?.date || null,
+    status: end?.outcome || (bookedOn ? 'booked' : 'contacted'),
     notes: r.notes,
     updatedAt: r.updated_at
   };
+}
 
 export function getLead(offerId, id) {
-  return shapeLead(db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId));
+  return shapeDmLead(db.prepare('SELECT * FROM leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId));
 }
 
 export function dmLeads(offerId, { open = false, limit = 1000 } = {}) {
-  return db
-    .prepare(`SELECT * FROM dm_leads WHERE offer_id = ? ${open ? 'AND outcome IS NULL' : ''} ORDER BY updated_at DESC, id DESC LIMIT ?`)
-    .all(offerId, limit)
-    .map(shapeLead);
+  const list = db.prepare('SELECT * FROM leads WHERE offer_id = ? ORDER BY updated_at DESC, id DESC').all(offerId).map(shapeDmLead);
+  return (open ? list.filter((l) => !l.outcome) : list).slice(0, limit);
+}
+
+function addDmStep(offerId, leadId, outcome, date) {
+  const at = dayKey(Date.now(), getSettings().timezone) === date ? new Date().toISOString() : atFrom(date, '12:00');
+  db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, counted, at) VALUES(?, ?, ?, ?, 'dm', 1, ?)").run(leadId, offerId, date, outcome, at);
+  bumpDm(offerId, date, outcome, 1);
+}
+function dropDmSteps(offerId, leadId, outcomes) {
+  for (const d of dmEntries(leadId).filter((d) => outcomes.includes(d.outcome))) {
+    bumpDm(offerId, d.date, d.outcome, -1);
+    db.prepare('DELETE FROM lead_dials WHERE id = ?').run(d.id);
+  }
 }
 
 export function createLead(offerId, handle, date) {
   const h = String(handle || '').trim().replace(/\s+/g, ' ').slice(0, 80);
   if (!h) throw new Error('Add their IG handle or name');
   return db.transaction(() => {
-    const now = new Date().toISOString();
-    const id = db
-      .prepare('INSERT INTO dm_leads(offer_id, handle, contacted_on, created_at, updated_at) VALUES(?, ?, ?, ?, ?)')
-      .run(offerId, h, date, now, now).lastInsertRowid;
-    bumpDm(offerId, date, 'contacted', 1);
+    const id = insertLead(offerId, { contact: h });
+    addDmStep(offerId, id, 'contacted', date);
     return getLead(offerId, id);
   })();
 }
@@ -493,67 +541,50 @@ export function createLead(offerId, handle, date) {
 export function setLeadStatus(offerId, id, status, today) {
   if (!LEAD_STATUSES.includes(status)) throw new Error('Unknown status');
   return db.transaction(() => {
-    const r = db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
-    if (!r) return null;
-    let { booked_on, outcome, outcome_on } = r;
+    const cur = getLead(offerId, id);
+    if (!cur) return null;
     // take back what no longer applies
-    if (outcome && outcome !== status) {
-      bumpDm(offerId, outcome_on, outcome, -1);
-      outcome = outcome_on = null;
-    }
-    if (status === 'contacted' && booked_on) {
-      bumpDm(offerId, booked_on, 'booked', -1);
-      booked_on = null;
-    }
+    if (cur.outcome && cur.outcome !== status) dropDmSteps(offerId, cur.id, ['converted', 'not_converted']);
+    if (status === 'contacted' && cur.bookedOn) dropDmSteps(offerId, cur.id, ['booked']);
     // add what's new
-    if (status === 'booked' && !booked_on) {
-      booked_on = today;
-      bumpDm(offerId, today, 'booked', 1);
-    }
-    if ((status === 'converted' || status === 'not_converted') && outcome !== status) {
-      outcome = status;
-      outcome_on = today;
-      bumpDm(offerId, today, status, 1);
-    }
-    db.prepare('UPDATE dm_leads SET booked_on = ?, outcome = ?, outcome_on = ?, updated_at = ? WHERE id = ?').run(
-      booked_on,
-      outcome,
-      outcome_on,
-      new Date().toISOString(),
-      r.id
-    );
-    return getLead(offerId, r.id);
+    if (status === 'booked' && !cur.bookedOn) addDmStep(offerId, cur.id, 'booked', today);
+    if ((status === 'converted' || status === 'not_converted') && cur.outcome !== status) addDmStep(offerId, cur.id, status, today);
+    db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), cur.id);
+    return getLead(offerId, cur.id);
   })();
 }
 
 export function updateLead(offerId, id, patch) {
-  const sets = [];
-  const vals = { id: Number(id), offerId, now: new Date().toISOString() };
+  const p = {};
   if ('handle' in patch) {
     const h = String(patch.handle || '').trim().replace(/\s+/g, ' ').slice(0, 80);
     if (!h) throw new Error('Add their IG handle or name');
-    sets.push('handle = @handle');
-    vals.handle = h;
+    p.contact = h;
   }
-  if ('notes' in patch) {
-    sets.push('notes = @notes');
-    vals.notes = String(patch.notes || '').slice(0, 2000);
-  }
-  if (sets.length) db.prepare(`UPDATE dm_leads SET ${sets.join(', ')}, updated_at = @now WHERE id = @id AND offer_id = @offerId`).run(vals);
+  if ('notes' in patch) p.notes = patch.notes;
+  if (Object.keys(p).length) updateColdLead(offerId, id, p);
   return getLead(offerId, id);
 }
 
 /** Remove a lead and take back everything it added to the day tallies. */
-export function deleteLead(offerId, id) {
+export const deleteLead = (offerId, id) => deleteColdLead(offerId, id);
+
+/** One-off: copy the old DM Setting leads into the CRM, with their steps already in the DM numbers. */
+function moveDmLeads() {
+  if (getSettings().dm_leads_moved) return;
   db.transaction(() => {
-    const r = db.prepare('SELECT * FROM dm_leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
-    if (!r) return;
-    bumpDm(offerId, r.contacted_on, 'contacted', -1);
-    if (r.booked_on) bumpDm(offerId, r.booked_on, 'booked', -1);
-    if (r.outcome) bumpDm(offerId, r.outcome_on, r.outcome, -1);
-    db.prepare('DELETE FROM dm_leads WHERE id = ?').run(r.id);
+    const add = db.prepare("INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, counted, label, at) VALUES(?, ?, ?, ?, 'dm', 1, '', ?)");
+    for (const r of db.prepare('SELECT * FROM dm_leads ORDER BY id').all()) {
+      const id = insertLead(r.offer_id, { contact: r.handle, notes: r.notes || '' });
+      add.run(id, r.offer_id, r.contacted_on, 'contacted', atFrom(r.contacted_on, '12:00'));
+      if (r.booked_on) add.run(id, r.offer_id, r.booked_on, 'booked', atFrom(r.booked_on, '12:01'));
+      if (r.outcome) add.run(id, r.offer_id, r.outcome_on, r.outcome, atFrom(r.outcome_on, '12:02'));
+      db.prepare('UPDATE leads SET created_at = ?, updated_at = ? WHERE id = ?').run(r.created_at, r.updated_at, id);
+    }
+    setSetting('dm_leads_moved', new Date().toISOString());
   })();
 }
+export { moveDmLeads };
 
 // ---------- Cold-call leads ----------
 // One row per business on the call list, scoped to an offer. Every dial logged against a lead is a
@@ -643,6 +674,13 @@ export function guessOutcome(text) {
   return null;
 }
 
+/** A counted history entry moves a day tally: DMs count on DM Setting, calls on Dialling. */
+function bumpEntry(offerId, d, delta) {
+  if (d.channel === 'dm') {
+    if (DM_FIELDS.includes(d.outcome)) bumpDm(offerId, d.date, d.outcome, delta);
+  } else if (SDR_FIELDS.includes(d.outcome)) bumpSdr(offerId, d.date, d.outcome, delta);
+}
+
 function bumpSdr(offerId, date, key, delta) {
   const cur = sdrDay(offerId, date) || Object.fromEntries(SDR_FIELDS.map((k) => [k, 0]));
   cur[key] = Math.max(0, (cur[key] || 0) + delta);
@@ -676,7 +714,7 @@ const LEAD_SELECT = `
 
 function shapeColdLead(r, dials) {
   if (!r) return null;
-  const last = dials.filter((d) => SDR_FIELDS.includes(d.outcome)).at(-1) || null;
+  const last = dials.filter((d) => SDR_FIELDS.includes(d.outcome) || (d.channel === 'dm' && DM_FIELDS.includes(d.outcome))).at(-1) || null;
   const call = r.call_id && r.c_start ? { id: r.call_id, start: r.c_start, outcome: r.c_outcome, cash: r.c_cash, title: r.c_title, cancelled: r.c_status === 'cancelled' } : null;
   let stage = last?.outcome || 'new';
   if (call && !call.cancelled) stage = call.outcome && call.outcome !== 'pending' ? 'call_' + call.outcome : 'booked';
@@ -777,7 +815,7 @@ export function deleteColdLead(offerId, id) {
   db.transaction(() => {
     const l = db.prepare('SELECT id FROM leads WHERE id = ? AND offer_id = ?').get(Number(id), offerId);
     if (!l) return;
-    for (const d of db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? AND counted = 1').all(l.id)) bumpSdr(offerId, d.date, d.outcome, -1);
+    for (const d of db.prepare('SELECT * FROM lead_dials WHERE lead_id = ? AND counted = 1').all(l.id)) bumpEntry(offerId, d, -1);
     db.prepare('DELETE FROM lead_dials WHERE lead_id = ?').run(l.id);
     db.prepare('DELETE FROM leads WHERE id = ?').run(l.id);
   })();
@@ -786,16 +824,19 @@ export function deleteColdLead(offerId, id) {
 /** Log one dial on a lead. It counts on `date` in the SDR tallies. */
 export const cleanTime = (t) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(t || '') ? t : null);
 
-export function logDial(offerId, leadId, { outcome, date, followUp, followUpTime, note, reason }) {
-  if (!SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
+export function logDial(offerId, leadId, { outcome, date, followUp, followUpTime, note, reason, channel }) {
+  // a DM-setting offer logs DMs that count on DM Setting; everything else is a dial that counts on Dialling
+  const dm = channel === 'dm';
+  if (!(dm ? DM_FIELDS : SDR_FIELDS).includes(outcome)) throw new Error('Unknown outcome');
   return db.transaction(() => {
     const l = db.prepare('SELECT id, follow_up FROM leads WHERE id = ? AND offer_id = ?').get(Number(leadId), offerId);
     if (!l) return null;
-    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, cb_time, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, ?, ?, 1, ?, ?)').run(
+    db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, channel, reason, cb_time, note, counted, prev_follow_up, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)').run(
       l.id,
       offerId,
       date,
       outcome,
+      dm ? 'dm' : 'call',
       cleanReason(reason),
       outcome === 'callback' ? cleanTime(followUpTime) : null,
       String(note || '').slice(0, 1000),
@@ -803,7 +844,11 @@ export function logDial(offerId, leadId, { outcome, date, followUp, followUpTime
       // stamped now, unless it's being logged for another day
       dayKey(Date.now(), getSettings().timezone) === date ? new Date().toISOString() : atFrom(date, '12:00')
     );
-    bumpSdr(offerId, date, outcome, 1);
+    bumpEntry(offerId, { channel: dm ? 'dm' : 'call', date, outcome }, 1);
+    if (dm) {
+      db.prepare('UPDATE leads SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), l.id);
+      return getColdLead(offerId, l.id);
+    }
     const fu = outcome === 'callback' || outcome === 'no_answer' ? (/^\d{4}-\d{2}-\d{2}$/.test(followUp || '') ? followUp : null) : null;
     db.prepare('UPDATE leads SET follow_up = ?, updated_at = ? WHERE id = ?').run(fu, new Date().toISOString(), l.id);
     if (outcome === 'booked') linkLeadCalls();
@@ -816,7 +861,7 @@ export function removeDial(offerId, leadId, dialId) {
   return db.transaction(() => {
     const d = db.prepare('SELECT * FROM lead_dials WHERE id = ? AND lead_id = ? AND offer_id = ?').get(Number(dialId), Number(leadId), offerId);
     if (!d) return getColdLead(offerId, leadId);
-    if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
+    if (d.counted) bumpEntry(offerId, d, -1);
     // undoing the latest dial puts the follow-up date back to what it was before that dial
     // (counted dials, and callbacks added by hand, are the entries that move the follow-up date)
     const moves = `(counted = 1 OR (outcome = 'callback' AND label = ''))`;
@@ -916,8 +961,10 @@ function matchLeadCalls() {
   const leads = db
     .prepare(
       `SELECT l.*, (SELECT MIN(date) FROM lead_dials d WHERE d.lead_id = l.id AND d.outcome = 'booked') AS booked_on
-       FROM leads l LEFT JOIN calls c ON c.id = l.call_id
-       WHERE l.call_id IS NULL OR c.id IS NULL OR c.status = 'cancelled'`
+       FROM leads l LEFT JOIN calls c ON c.id = l.call_id JOIN offers o ON o.id = l.offer_id
+       WHERE (l.call_id IS NULL OR c.id IS NULL OR c.status = 'cancelled')
+         -- only offers where you take the calls; a DM-setting lead must never pull in someone's call
+         AND (',' || o.roles || ',') LIKE '%,closing,%'`
     )
     .all()
     .filter((l) => l.booked_on);
@@ -962,8 +1009,8 @@ export function linkableCalls(offerId, fromIso) {
 // Dialling numbers for its day; changing the date, outcome or that switch moves the tally to match.
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-export const ENTRY_TYPES = [...SDR_FIELDS, 'inbound'];
-export const CHANNELS = ['call', 'sms', 'email'];
+export const ENTRY_TYPES = [...SDR_FIELDS, 'inbound', 'contacted', 'converted', 'not_converted'];
+export const CHANNELS = ['call', 'sms', 'email', 'dm'];
 const guessChannel = (t) => (/\b(sms|texts?|texted|txt)\b/i.test(t) ? 'sms' : /e-?mail/i.test(t) ? 'email' : 'call');
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
@@ -980,9 +1027,10 @@ function entryFields(e) {
   const outcome = e.outcome ? String(e.outcome) : null;
   if (outcome && !ENTRY_TYPES.includes(outcome)) throw new Error('Unknown outcome');
   const channel = CHANNELS.includes(e.channel) ? e.channel : 'call';
-  // only calls you made go in the dial numbers: not texts, emails, or them ringing you
-  const counted = !!e.counted && channel === 'call' && outcome !== 'inbound';
-  if (counted && !outcome) throw new Error('Pick an outcome to count it on Dialling');
+  // only calls you made go in the dial numbers (not texts, emails, or them ringing you), and DMs with
+  // a DM setting outcome go in the DM Setting numbers
+  const counted = !!e.counted && (channel === 'dm' ? DM_FIELDS.includes(outcome) : channel === 'call' && SDR_FIELDS.includes(outcome));
+  if (e.counted && !outcome) throw new Error('Pick an outcome to count it');
   const at = atFrom(e.date, e.time);
   return {
     date: dayKey(at, getSettings().timezone),
@@ -1010,7 +1058,7 @@ export function addLeadEntry(offerId, leadId, e) {
     const ins = db.prepare('INSERT INTO lead_dials(lead_id, offer_id, date, outcome, reason, channel, subject, note, ext_id, counted, at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
       l.id, offerId, f.date, f.outcome, f.reason, f.channel, f.subject, f.note, f.extId, f.counted ? 1 : 0, f.at
     );
-    if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
+    if (f.counted) bumpEntry(offerId, f, 1);
     // a callback added by hand sets the lead's follow-up date (undo puts the old one back)
     const fu = f.outcome === 'callback' && /^\d{4}-\d{2}-\d{2}$/.test(e.followUp || '') ? e.followUp : null;
     if (fu) {
@@ -1027,8 +1075,8 @@ export function updateLeadEntry(offerId, leadId, dialId, e) {
     if (!d) return null;
     const was = d.date ? wallClock(d.at, getSettings().timezone) : {};
     const f = entryFields({ ...was, outcome: d.outcome, reason: d.reason, channel: d.channel, subject: d.subject, note: d.note, extId: d.ext_id, counted: !!d.counted, ...e });
-    if (d.counted) bumpSdr(offerId, d.date, d.outcome, -1);
-    if (f.counted) bumpSdr(offerId, f.date, f.outcome, 1);
+    if (d.counted) bumpEntry(offerId, d, -1);
+    if (f.counted) bumpEntry(offerId, f, 1);
     db.prepare('UPDATE lead_dials SET date = ?, at = ?, outcome = ?, reason = ?, channel = ?, subject = ?, note = ?, counted = ? WHERE id = ?').run(
       f.date, f.at, f.outcome, f.reason, f.channel, f.subject, f.note, f.counted ? 1 : 0, d.id
     );
@@ -1097,3 +1145,6 @@ export function reasonsUsed(offerId) {
     (out[r.outcome] ??= []).push(r.reason);
   return out;
 }
+
+// copy the old DM Setting leads into the CRM (once)
+moveDmLeads();

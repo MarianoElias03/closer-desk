@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { coldLeads, linkableCalls, getSettings, reasonsUsed } from '$lib/server/db.js';
 import { dayKey, dayStartIso, addDays } from '$lib/time.js';
-import { listView, neighbours } from '$lib/leads.js';
+import { listView, neighbours, leadMode } from '$lib/leads.js';
 
 export function load({ params, locals, url }) {
   const tz = getSettings().timezone;
@@ -10,7 +10,7 @@ export function load({ params, locals, url }) {
   const id = Number(params.id);
   const lead = leads.find((l) => l.id === id);
   if (!lead) error(404, `That lead isn't on ${locals.offer.name}. Switch offer, or go back to the lead list.`);
-  const view = listView(url.searchParams);
+  const view = listView(url.searchParams, leadMode(locals.offer));
   return {
     lead,
     view,

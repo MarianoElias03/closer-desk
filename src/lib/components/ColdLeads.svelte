@@ -28,11 +28,12 @@
   import { ddmm, money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
-  let { leads, today, tz } = $props();
+  let { leads, today, tz, mode = 'sdr' } = $props();
+  const filters = $derived(mode === 'sdr' ? FILTERS : FILTERS.filter((f) => f.key !== 'queue'));
 
   // filter, search and sort live in the URL, so a lead page knows the order you were browsing in
   // and Back lands on the same view
-  const start = listView(page.url.searchParams);
+  const start = listView(page.url.searchParams, mode);
   let filter = $state(start.filter);
   let q = $state(start.q);
   let sort = $state(start.sort);
@@ -197,16 +198,21 @@
 
   {#if adding}
     <form class="add" transition:slide={{ duration: 180 }} onsubmit={(e) => (e.preventDefault(), add())}>
-      <label class="field">Business<input bind:value={draft.business} /></label>
-      <label class="field">Contact name<input bind:value={draft.contact} /></label>
-      <label class="field">Mobile<input bind:value={draft.phone} inputmode="tel" /></label>
-      <label class="field">Suburb<input bind:value={draft.suburb} /></label>
+      {#if mode === 'dm'}
+        <label class="field">IG handle or name<input bind:value={draft.contact} /></label>
+        <label class="field">Mobile<input bind:value={draft.phone} inputmode="tel" /></label>
+      {:else}
+        <label class="field">Business<input bind:value={draft.business} /></label>
+        <label class="field">Contact name<input bind:value={draft.contact} /></label>
+        <label class="field">Mobile<input bind:value={draft.phone} inputmode="tel" /></label>
+        <label class="field">Suburb<input bind:value={draft.suburb} /></label>
+      {/if}
       <button class="btn primary small" type="submit"><Icon name="check" size={14} />Add</button>
     </form>
   {/if}
 
   <div class="tabs" role="tablist">
-    {#each FILTERS as f}
+    {#each filters as f}
       <button role="tab" aria-selected={filter === f.key} class:on={filter === f.key} onclick={() => ((filter = f.key), (limit = 100))}>
         {f.label}<span class="n num">{counts[f.key]}</span>
       </button>

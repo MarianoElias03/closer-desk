@@ -198,7 +198,7 @@ const contactProps = {
     type: 'string',
     enum: [...ENTRY_TYPES, 'note'],
     description:
-      'no_answer (or no reply), booked, not_interested, callback (follow up), wrong_no (or bounced), inbound (the lead contacted the user, e.g. an email reply), note (the user just sent something)'
+      'no_answer (or no reply), booked, not_interested, callback (follow up), wrong_no (or bounced), inbound (the lead contacted the user, e.g. an email reply), note (the user just sent something). On DM-setting offers use channel dm with contacted, booked, converted or not_converted.'
   },
   reason: {
     type: 'string',

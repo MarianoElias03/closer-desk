@@ -1,8 +1,10 @@
-import { closeRange, monthMeta, getSettings, callsRange } from '$lib/server/db.js';
-import { dayKey, monthBounds, shiftMonth, dayStartIso, addDays } from '$lib/time.js';
-import { CALL_OUTCOMES } from '$lib/stats.js';
+import { closeRange, monthMeta, getSettings, unlinkedRecordings, callsRange } from '$lib/server/db.js';
+import { redirect } from '@sveltejs/kit';
+import { dayKey, monthBounds, shiftMonth } from '$lib/time.js';
 
 export function load({ url, locals }) {
+  // Closing is only for offers where you take the calls
+  if (!locals.offer.roles.includes('closing')) redirect(303, '/leads');
   const o = locals.offer.id;
   const tz = getSettings().timezone;
   const today = dayKey(Date.now(), tz);
@@ -10,25 +12,14 @@ export function load({ url, locals }) {
   const { first, last } = monthBounds(month);
   const prev = monthBounds(shiftMonth(month, -1));
 
-  // what the calendar + logged call outcomes say per day
-  const fromCalls = {};
-  for (const c of callsRange(o, dayStartIso(first, tz), dayStartIso(addDays(last, 1), tz))) {
-    const d = dayKey(c.start, tz);
-    const t = (fromCalls[d] ??= { scheduled: 0, logged: 0, no_show: 0, closed: 0, not_interested: 0, callbacks: 0, unqualified: 0, cash: 0 });
-    t.scheduled++;
-    const col = CALL_OUTCOMES.find((o) => o.key === c.outcome)?.column;
-    if (col) {
-      t.logged++;
-      t[col]++;
-    }
-    t.cash += c.cash || 0;
-  }
   return {
     month,
     days: closeRange(o, first, last),
     prevDays: closeRange(o, prev.first, prev.last),
     meta: monthMeta(o, month),
     prevMeta: monthMeta(o, shiftMonth(month, -1)),
-    fromCalls
+    // the call list (was the Calls tab)
+    calls: callsRange(o, new Date(Date.now() - 120 * 864e5).toISOString(), new Date(Date.now() + 60 * 864e5).toISOString()),
+    recordings: unlinkedRecordings()
   };
 }

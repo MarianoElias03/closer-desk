@@ -1,11 +1,9 @@
 <script>
-  import { tick } from 'svelte';
   import MonthSwitch from '$lib/components/MonthSwitch.svelte';
   import Stat from '$lib/components/Stat.svelte';
   import DayChart from '$lib/components/DayChart.svelte';
-  import LogTable from '$lib/components/LogTable.svelte';
   import DaysWorked from '$lib/components/DaysWorked.svelte';
-  import { SDR_OUTCOMES, sdrSummary, sdrTotal, sdrSpoken } from '$lib/stats.js';
+  import { SDR_OUTCOMES, sdrSummary } from '$lib/stats.js';
   import { pct, num } from '$lib/fmt.js';
   import { monthBounds, addDays } from '$lib/time.js';
 
@@ -26,22 +24,6 @@
   const delta = (a, b) => (a == null || b == null ? null : a - b);
   const deltaLabel = (d) => (d == null ? null : `${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)} pts on last month`);
 
-  const computed = [
-    { label: 'Total leads', fn: (v) => sdrTotal(fill(v)) || '' },
-    { label: 'Spoken with', fn: (v) => sdrSpoken(fill(v)) || '' }
-  ];
-  function fill(v) {
-    return Object.fromEntries(SDR_OUTCOMES.map((o) => [o.key, Number(v[o.key]) || 0]));
-  }
-
-  let highlight = $state(null);
-  async function jump(date) {
-    highlight = null;
-    await tick();
-    highlight = date;
-    document.getElementById(`d-${date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    document.querySelector(`#d-${date} input`)?.focus({ preventScroll: true });
-  }
 </script>
 
 <svelte:head><title>Dialling · Closer Desk</title></svelte:head>
@@ -49,7 +31,7 @@
 <header class="top">
   <div>
     <h1>Dialling</h1>
-    <p class="muted">Your SDR - Oct and SDR - Nov tabs, one row per day. Enter the outcomes and the totals add up for you.</p>
+    <p class="muted">Your dialling numbers by day. They add up from the outcomes you log on your leads and the dial pad on Today.</p>
   </div>
   <MonthSwitch month={data.month} base="/sdr" />
 </header>
@@ -73,15 +55,13 @@
 <section class="panel chart">
   <div class="head">
     <h2>Dials by day</h2>
-    <p class="faint">Click a day to edit it</p>
   </div>
-  <DayChart days={rows} fields={SDR_OUTCOMES} today={data.today} onpick={jump} unit="dials" />
+  <DayChart days={rows} fields={SDR_OUTCOMES} today={data.today} unit="dials" />
   <div class="legend">
     {#each SDR_OUTCOMES as o}<span class="t-{o.tone}"><i></i>{o.label}</span>{/each}
   </div>
 </section>
 
-<LogTable {rows} fields={SDR_OUTCOMES} {computed} endpoint="/api/sdr" today={data.today} {highlight} />
 
 <style>
   .top {

@@ -6,11 +6,14 @@
   import LeadPad from '$lib/components/LeadPad.svelte';
   import LeadHistory from '$lib/components/LeadHistory.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
-  import { FILTERS, leadName, linkFor, viewQuery, consentLabel, calendarNote } from '$lib/leads.js';
+  import { FILTERS, leadName, linkFor, viewQuery, consentLabel, calendarNote, leadMode } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
 
   let { data } = $props();
+  // how this offer's leads are worked: dialling, DM setting, or closing only (history, no pad)
+  const mode = $derived(leadMode(data.offer));
+  const takesCalls = $derived(data.offer.roles.includes('closing'));
   const lead = $derived(data.lead);
   const tz = $derived(data.tz);
   const query = $derived(viewQuery(data.view));
@@ -82,7 +85,7 @@
   }
   async function remove() {
     const n = lead.dials.filter((d) => d.counted).length;
-    if (!confirm(`Delete ${leadName(lead)}?${n ? ` Its ${n} counted ${n === 1 ? 'dial comes' : 'dials come'} off your Dialling numbers too.` : ''}`)) return;
+    if (!confirm(`Delete ${leadName(lead)}?${n ? ` Its ${n} counted ${n === 1 ? 'dial comes' : 'dials come'} off your ${mode === 'dm' ? 'DM Setting' : 'Dialling'} numbers too.` : ''}`)) return;
     try {
       const j = await api(`/api/leads/${lead.id}`, 'DELETE');
       toast(`Deleted ${leadName(lead)}${calendarNote(j.calendar)}`);
@@ -193,15 +196,19 @@
     <div class="main">
       <section class="panel card">
         <LeadSummary {lead} today={data.today} {tz} title="h1" chips={false} />
-        <div class="log">
-          <span class="k">Log this call</span>
-          <LeadPad {lead} today={data.today} reasons={data.reasons} />
-          <p class="faint small">Keys 1 to 5 pick an outcome, then a number picks the reason. The arrow keys go to the previous or next lead.</p>
-        </div>
+        {#if mode !== 'closing'}
+          <div class="log">
+            <span class="k">{mode === 'dm' ? 'Log this DM' : 'Log this call'}</span>
+            <LeadPad {lead} today={data.today} reasons={data.reasons} {mode} canBook={takesCalls} />
+            <p class="faint small">
+              Keys 1 to {mode === 'dm' ? 4 : 5} pick an outcome, then a number picks the reason. The arrow keys go to the previous or next lead.
+            </p>
+          </div>
+        {/if}
       </section>
 
       <section class="panel">
-        <LeadHistory {lead} {tz} today={data.today} reasons={data.reasons} />
+        <LeadHistory {lead} {tz} today={data.today} reasons={data.reasons} {mode} />
       </section>
     </div>
 
@@ -250,7 +257,9 @@
           </form>
         {:else}
           <dl class="info" in:fade={{ duration: 140 }}>
-            {#each [['Business', lead.business], ['Contact', lead.contact], ['Mobile', lead.phone], ['Email', lead.email], ['Suburb', lead.suburb], ['Category', lead.category], ['Prospect score', lead.score]] as [k, v]}
+            {#each mode === 'dm'
+              ? [['IG handle or name', lead.contact], ['Mobile', lead.phone], ['Email', lead.email], ...[['Business', lead.business], ['Suburb', lead.suburb], ['Category', lead.category], ['Prospect score', lead.score]].filter(([, v]) => v != null && v !== '')]
+              : [['Business', lead.business], ['Contact', lead.contact], ['Mobile', lead.phone], ['Email', lead.email], ['Suburb', lead.suburb], ['Category', lead.category], ['Prospect score', lead.score]] as [k, v]}
               <div>
                 <dt>{k}</dt>
                 <dd>
@@ -310,6 +319,7 @@
         </section>
       {/if}
 
+      {#if takesCalls}
       <section class="panel">
         <h2>Booked call</h2>
         {#if lead.call}
@@ -319,7 +329,7 @@
             <span class="chip"><span class="dot"></span>{co.key === 'pending' ? 'Outcome not logged' : co.label}{lead.call.cash ? `, ${money(lead.call.cash)}` : ''}</span>
             <div class="acts">
               <button class="btn small ghost" onclick={() => link(null)}>Unlink</button>
-              <a class="btn small" href="/calls?open={encodeURIComponent(lead.call.id)}">Open call</a>
+              <a class="btn small" href="/closing?open={encodeURIComponent(lead.call.id)}#calls">Open call</a>
             </div>
           </div>
         {:else}
@@ -339,6 +349,7 @@
           {/if}
         {/if}
       </section>
+      {/if}
 
       <button class="btn small ghost danger" onclick={remove}>Delete this lead</button>
     </aside>

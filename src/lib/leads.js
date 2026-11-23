@@ -1,8 +1,22 @@
 // Cold-call leads: stages, the dial queue, and turning a spreadsheet into lead rows.
-import { SDR_OUTCOMES } from './stats.js';
+import { SDR_OUTCOMES, DM_OUTCOMES } from './stats.js';
 
-/** What a history entry can be: the five dial outcomes, plus a call they made to you (never counted). */
-export const ENTRY_TYPES = [...SDR_OUTCOMES, { key: 'inbound', label: 'Inbound call', short: 'Inbound', tone: 'green' }];
+/**
+ * What a history entry can be: the five dial outcomes, a call they made to you (never counted), and the
+ * DM setting outcomes (contacted, converted, not converted; booked is shared).
+ */
+export const ENTRY_TYPES = [
+  ...SDR_OUTCOMES,
+  { key: 'inbound', label: 'Inbound call', short: 'Inbound', tone: 'green' },
+  ...DM_OUTCOMES.filter((o) => o.key !== 'booked').map((o) => (o.key === 'contacted' ? { ...o, label: 'Contacted' } : o))
+];
+/** The outcome pad for each kind of offer: dialling (SDR) or DM setting. */
+export const DM_PAD = DM_OUTCOMES.map((o) => (o.key === 'contacted' ? { ...o, label: 'Contacted' } : o));
+/** How you work an offer's leads: 'sdr' (calls count on Dialling), 'dm' (DMs count on DM Setting) or 'closing' (history only). */
+export const leadMode = (offer) => (offer?.roles?.includes('sdr') ? 'sdr' : offer?.roles?.includes('dm') ? 'dm' : 'closing');
+/** Which entry types fit a channel: DM outcomes on DMs, call outcomes everywhere else. */
+export const DM_KEYS = ['contacted', 'booked', 'converted', 'not_converted'];
+export const typesFor = (channel) => (channel === 'dm' ? ENTRY_TYPES.filter((o) => DM_KEYS.includes(o.key)) : ENTRY_TYPES.filter((o) => !DM_KEYS.includes(o.key) || o.key === 'booked'));
 export const entryType = (k) => ENTRY_TYPES.find((o) => o.key === k);
 
 /** Suggested second dispositions for each outcome. Anything you type yourself joins these. */
@@ -22,7 +36,10 @@ export const REASONS = {
   wrong_no: ['Disconnected', 'Wrong person', 'Business closed', 'Number not in service', 'Landline / fax'],
   callback: ['Busy right now', 'Call back later today', 'Wants info first', 'Talk to partner', 'Owner away'],
   booked: ['Discovery call', 'Wants a quote', 'Wants a demo'],
-  inbound: ['Returned my call', 'Asked for info', 'Ready to book', 'Asked to stop']
+  inbound: ['Returned my call', 'Asked for info', 'Ready to book', 'Asked to stop'],
+  contacted: ['Messaged in', 'Replied to a story', 'Commented on a post', 'Outbound DM', 'Referral'],
+  converted: ['Paid in full', 'Payment plan', 'Deposit'],
+  not_converted: ['Too expensive', 'Not a fit', 'Not ready yet', 'Ghosted', 'Went with someone else']
 };
 export function reasonOptions(outcome, used = {}) {
   const base = REASONS[outcome] || [];
@@ -36,7 +53,8 @@ export const withReason = (label, reason) => (reason ? `${label}, ${reason[0].to
 export const CHANNELS = [
   { key: 'call', label: 'Call', plural: 'Calls', icon: 'phone' },
   { key: 'sms', label: 'SMS', plural: 'SMS', icon: 'chat' },
-  { key: 'email', label: 'Email', plural: 'Emails', icon: 'mail' }
+  { key: 'email', label: 'Email', plural: 'Emails', icon: 'mail' },
+  { key: 'dm', label: 'DM', plural: 'DMs', icon: 'send' }
 ];
 export const channelOf = (k) => CHANNELS.find((c) => c.key === k) || CHANNELS[0];
 
@@ -52,11 +70,12 @@ export function consentLabel(list = []) {
 // the same outcome reads differently over text or email
 const WRITTEN = {
   sms: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They texted you', wrong_no: 'Wrong number' },
-  email: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They emailed you', wrong_no: 'Bounced' }
+  email: { no_answer: 'No reply', callback: 'Follow up', inbound: 'They emailed you', wrong_no: 'Bounced' },
+  dm: { contacted: 'Contacted' }
 };
 /** Label for an outcome on a channel, e.g. "No reply" for an SMS that got no answer. */
 export function entryLabel(outcome, channel = 'call') {
-  if (!outcome) return channel === 'sms' ? 'Sent a text' : channel === 'email' ? 'Sent an email' : 'Note';
+  if (!outcome) return channel === 'sms' ? 'Sent a text' : channel === 'email' ? 'Sent an email' : channel === 'dm' ? 'Sent a DM' : 'Note';
   return WRITTEN[channel]?.[outcome] || entryType(outcome)?.label || 'Note';
 }
 
@@ -67,6 +86,9 @@ export const STAGES = {
   booked: { label: 'Booked', tone: 'blue' },
   not_interested: { label: 'Not interested', tone: 'red' },
   wrong_no: { label: 'Wrong number', tone: 'slate' },
+  contacted: { label: 'Contacted', tone: 'iron' },
+  converted: { label: 'Converted', tone: 'green' },
+  not_converted: { label: 'Not converted', tone: 'red' },
   call_no_show: { label: 'No show', tone: 'iron' },
   call_closed: { label: 'Closed', tone: 'green' },
   call_not_interested: { label: 'Said no on call', tone: 'red' },
@@ -82,8 +104,8 @@ export const FILTERS = [
   { key: 'queue', label: 'To dial', test: (l, today) => inQueue(l, today) },
   { key: 'follow', label: 'Follow-ups', test: (l) => ['callback', 'call_callback', 'call_no_show'].includes(l.stage) },
   { key: 'booked', label: 'Booked', test: (l) => l.stage === 'booked' },
-  { key: 'closed', label: 'Closed', test: (l) => l.stage === 'call_closed' },
-  { key: 'out', label: 'Out', test: (l) => ['not_interested', 'wrong_no', 'call_not_interested', 'call_unqualified'].includes(l.stage) },
+  { key: 'closed', label: 'Closed', test: (l) => l.stage === 'call_closed' || l.stage === 'converted' },
+  { key: 'out', label: 'Out', test: (l) => ['not_interested', 'wrong_no', 'call_not_interested', 'call_unqualified', 'not_converted'].includes(l.stage) },
   { key: 'optout', label: 'Opted out', test: (l) => !!l.doNotContact?.length },
   { key: 'all', label: 'All', test: () => true }
 ];
@@ -441,12 +463,13 @@ export const SORTS = [
 export const sortState = (sort) => parseSort(sort);
 
 /** The list's view settings from a URL, with defaults. */
-export function listView(params) {
+export function listView(params, mode = 'sdr') {
   const f = params.get('f');
   const s = params.get('s');
   const c = params.get('c');
   return {
-    filter: FILTERS.some((x) => x.key === f) ? f : 'queue',
+    // the call queue only means something when you're dialling; otherwise the list starts on All
+    filter: FILTERS.some((x) => x.key === f) && (mode === 'sdr' || f !== 'queue') ? f : mode === 'sdr' ? 'queue' : 'all',
     sort: /^-?([a-z]+|x:.{1,80})$/.test(s || '') ? s : 'score',
     q: (params.get('q') || '').slice(0, 100),
     channel: CHANNELS.some((x) => x.key === c) ? c : ''

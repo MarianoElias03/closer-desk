@@ -60,7 +60,7 @@
     goto(u, { replaceState: true, noScroll: true, keepFocus: true });
   }
 
-  // /calls?open=<id> (from a lead's booked call) opens that call's drawer
+  // /closing?open=<id> (from a lead's booked call) opens that call's drawer
   let openId = $state(page.url.searchParams.get('open'));
   const openCall = $derived(openId ? data.calls.find((c) => c.id === openId) : null);
 
@@ -85,12 +85,10 @@
   }
 </script>
 
-<svelte:head><title>Calls · Closer Desk</title></svelte:head>
-
-<header class="top">
+<header class="top" id="calls">
   <div>
-    <h1>Calls</h1>
-    <p class="muted">Every sales call from your calendar. Open one to log the outcome, cash and notes, and to see its Fathom recording.</p>
+    <h2>Calls</h2>
+    <p class="muted">Every sales call from your calendar. Open one to log the outcome, cash and notes, and to see its Fathom recording. Logging an outcome updates that day's numbers above.</p>
   </div>
   <button class="btn" onclick={() => (adding = !adding)}><Icon name="plus" size={16} />Add a call</button>
 </header>

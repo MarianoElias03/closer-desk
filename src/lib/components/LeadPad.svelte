@@ -3,7 +3,7 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { SDR_OUTCOMES } from '$lib/stats.js';
-  import { leadName, reasonOptions, calendarNote } from '$lib/leads.js';
+  import { leadName, reasonOptions, calendarNote, DM_PAD } from '$lib/leads.js';
   import { dayLabel } from '$lib/fmt.js';
   import { addDays } from '$lib/time.js';
   import { toast } from '$lib/toast.svelte.js';
@@ -13,7 +13,9 @@
    * outcome you picked. A reason is required: nothing is logged until you pick one or type your
    * own. A callback also takes its date here.
    */
-  let { lead, today, onlogged, reasons = {}, busy = $bindable(false) } = $props();
+  let { lead, today, onlogged, reasons = {}, busy = $bindable(false), mode = 'sdr', canBook = true } = $props();
+  // dialling offers get the five call outcomes; DM setting offers get the DM ones
+  const PADS = $derived(mode === 'dm' ? DM_PAD : SDR_OUTCOMES);
 
   let note = $state('');
   let pending = $state(null); // outcome key waiting for its reason
@@ -24,7 +26,7 @@
   let bkTime = $state('');
   let bkSkip = $state(false);
   let timeBox = $state(null);
-  const hasCall = $derived(!!(lead.call && !lead.call.cancelled));
+  const hasCall = $derived(!canBook || !!(lead.call && !lead.call.cancelled));
   let other = $state('');
 
   let lastId = null;
@@ -38,7 +40,7 @@
   });
 
   const options = $derived(pending ? reasonOptions(pending, reasons).slice(0, 9) : []);
-  const pendingLabel = $derived(SDR_OUTCOMES.find((o) => o.key === pending)?.label || '');
+  const pendingLabel = $derived(PADS.find((o) => o.key === pending)?.label || '');
 
   async function log(outcome, reason) {
     if (busy || !String(reason || '').trim()) return;
@@ -61,7 +63,7 @@
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save that dial');
-      const label = SDR_OUTCOMES.find((o) => o.key === outcome).label.toLowerCase();
+      const label = PADS.find((o) => o.key === outcome).label.toLowerCase();
       toast(
         `${leadName(lead)}: ${label}${reason ? `, ${reason.toLowerCase()}` : ''}${followUp ? `, call back ${dayLabel(followUp, { weekday: 'short', day: 'numeric', month: 'short' })}${cbTime ? ` at ${cbTime}` : ''}` : ''}${calendarNote(j.calendar)}`,
         j.calendar?.error ? 'error' : undefined
@@ -106,9 +108,9 @@
       return;
     }
     const i = Number(e.key) - 1;
-    if (i >= 0 && i < SDR_OUTCOMES.length) {
+    if (i >= 0 && i < PADS.length) {
       e.preventDefault();
-      press(SDR_OUTCOMES[i]);
+      press(PADS[i]);
     }
   }
   // the note wraps and grows as you type (field-sizing where the browser has it, this otherwise);
@@ -132,7 +134,7 @@
 <svelte:window onkeydown={onkey} />
 
 <div class="pad-wrap">
-  {#if lead.doNotContact?.includes('call')}
+  {#if mode === 'sdr' && lead.doNotContact?.includes('call')}
     <p class="warn"><Icon name="x" size={15} />They asked not to be called{lead.dncNote ? ` (${lead.dncNote})` : ''}. Only log a call here if they rang you.</p>
   {/if}
   <label class="field">
@@ -142,12 +144,12 @@
       rows="1"
       use:grow={note}
       bind:value={note}
-      placeholder="Note from this call (optional), e.g. spoke to receptionist, owner back Friday"
+      placeholder={mode === 'dm' ? 'Note from this DM (optional), e.g. asked about pricing, follow up Friday' : 'Note from this call (optional), e.g. spoke to receptionist, owner back Friday'}
     ></textarea>
   </label>
 
-  <div class="pads">
-    {#each SDR_OUTCOMES as o, i}
+  <div class="pads" style="--n: {PADS.length}">
+    {#each PADS as o, i}
       <button class="pad t-{o.tone}" class:on={pending === o.key} class:dim={pending && pending !== o.key} onclick={() => press(o)} disabled={busy} aria-pressed={pending === o.key}>
         <span class="key">{i + 1}</span>{o.label}
       </button>
@@ -155,7 +157,7 @@
   </div>
 
   {#if pending}
-    {@const tone = SDR_OUTCOMES.find((o) => o.key === pending)?.tone ?? 'none'}
+    {@const tone = PADS.find((o) => o.key === pending)?.tone ?? 'none'}
     <div class="why t-{tone}" transition:slide={{ duration: 180 }}>
       {#if pending === 'callback'}
         <div class="cb">
@@ -224,7 +226,7 @@
   }
   .pads {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(var(--n, 5), 1fr);
     gap: 10px;
   }
   .pad {
@@ -371,7 +373,7 @@
     .pads {
       grid-template-columns: repeat(2, 1fr);
     }
-    .pads .pad:last-child {
+    .pads .pad:nth-child(odd):last-child {
       grid-column: span 2;
     }
   }

@@ -94,7 +94,7 @@
     <h1>{dayLabel(data.today, { weekday: 'long', day: 'numeric', month: 'long' })}</h1>
   </div>
   <p class="muted daysum">
-    {data.calls.length} {data.calls.length === 1 ? 'call' : 'calls'} on the calendar today{#if data.needsOutcome.length}, <a href="/calls?f=needs">{data.needsOutcome.length} {data.needsOutcome.length === 1 ? 'call' : 'calls'} from the last week still {data.needsOutcome.length === 1 ? 'needs' : 'need'} an outcome</a>{/if}
+    {data.calls.length} {data.calls.length === 1 ? 'call' : 'calls'} on the calendar today{#if data.needsOutcome.length}, <a href="/closing?f=needs#calls">{data.needsOutcome.length} {data.needsOutcome.length === 1 ? 'call' : 'calls'} from the last week still {data.needsOutcome.length === 1 ? 'needs' : 'need'} an outcome</a>{/if}
   </p>
 </header>
 

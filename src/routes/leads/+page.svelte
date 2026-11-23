@@ -4,11 +4,12 @@
   import LeadDialer from '$lib/components/LeadDialer.svelte';
   import ColdLeads from '$lib/components/ColdLeads.svelte';
   import LeadImport from '$lib/components/LeadImport.svelte';
-  import { FILTERS, isDue } from '$lib/leads.js';
+  import { FILTERS, isDue, leadMode } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
 
   let { data } = $props();
 
+  const mode = $derived(leadMode(data.offer));
   let importing = $state(false);
   let dialId = $state(null);
 
@@ -25,8 +26,14 @@
   <div>
     <h1>Leads</h1>
     <p class="muted">
-      The call list for {data.offer.name}. Each outcome you log on a lead counts on Dialling the same as a tap, and a booking follows the lead
-      through to its closing call.
+      {#if mode === 'sdr'}
+        The call list for {data.offer.name}. Each outcome you log on a lead counts on Dialling the same as a tap, and a booking follows the lead
+        through to its closing call.
+      {:else if mode === 'dm'}
+        Everyone you've DM'd for {data.offer.name}. Each outcome you log on a lead counts on DM Setting, the same as a tap there.
+      {:else}
+        Everyone you've spoken to for {data.offer.name}, with their history, consent and booked calls.
+      {/if}
     </p>
   </div>
   <button class="btn primary" onclick={() => (importing = true)}><Icon name="upload" size={17} />Import spreadsheet</button>
@@ -34,17 +41,21 @@
 
 {#if data.leads.length}
   <section class="panel strip">
-    <Stat label="To dial today" value={count('queue')} />
-    <Stat label="Callbacks due" value={due} tone="yellow" />
+    {#if mode === 'sdr'}
+      <Stat label="To dial today" value={count('queue')} />
+      <Stat label="Callbacks due" value={due} tone="yellow" />
+    {/if}
     <Stat label="Contacted from the list today" value={contactedToday} />
     <Stat label="Booked" value={count('booked')} tone="blue" />
-    <Stat label="Closed" value={count('closed')} tone="green" hint={cash ? `${money(cash)} cash` : null} />
+    <Stat label={mode === 'dm' ? 'Converted' : 'Closed'} value={count('closed')} tone="green" hint={cash ? `${money(cash)} cash` : null} />
     <Stat label="On the list" value={data.leads.length} />
   </section>
 {/if}
 
-<LeadDialer leads={data.leads} today={data.today} tz={data.tz} reasons={data.reasons} bind:currentId={dialId} />
-<ColdLeads leads={data.leads} today={data.today} tz={data.tz} />
+{#if mode === 'sdr'}
+  <LeadDialer leads={data.leads} today={data.today} tz={data.tz} reasons={data.reasons} bind:currentId={dialId} />
+{/if}
+<ColdLeads leads={data.leads} today={data.today} tz={data.tz} {mode} />
 
 {#if importing}
   <LeadImport offerName={data.offer.name} today={data.today} onclose={() => (importing = false)} />
