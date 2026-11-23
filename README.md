@@ -73,6 +73,33 @@ Production build: `npm run build`, then `node build`. Set `PORT`, `HOST` and `DA
 
 The keywords that decide which calendar events count as sales calls are set in the app, under Settings.
 
+## Sign-in
+
+Every page and API needs a sign-in. The first time you open Closer Desk it asks you to create the
+account (only possible while there are none). Settings > Account lists every signed-in device, signs
+one out, and changes the password (which signs the others out). `/mcp` keeps its own Bearer token.
+
+## Android app
+
+`android/` is a native app (Kotlin, Jetpack Compose) for the same account:
+
+- **Dashboard across every offer**, each offer's leads with search, and the full Closer Desk pages
+  inside the app for everything else.
+- **Caller matching, like a CRM dialler.** When a lead rings, or you ring one, a card floats over the
+  call with the offer, status, reason, follow-up, last contact and note. Numbers are matched on the
+  phone (last 9 digits, the same rule as the server) against a copy of every lead, so it shows before
+  the network wakes up. Booked calls with a phone number match too.
+- **After the call**, a notification opens the outcome pad (reason required, callback and booking
+  times), which logs exactly like the lead page does.
+
+Setup on the phone (Call matching screen): make it the Caller ID app, allow phone and call log, allow
+"Display over other apps", and notifications. Android blocks call log and overlay access for apps
+installed outside the Play Store until you choose **Allow restricted settings** in the app's App info.
+
+Builds: `.github/workflows/android.yml` signs a release on every change under `android/` and publishes
+it as a GitHub Release, so Obtainium can install and update it. Local compile:
+`cd android && gradle :app:assembleDebug`.
+
 ## For AI assistants (MCP)
 
 Closer Desk serves an [MCP](https://modelcontextprotocol.io) endpoint at `/mcp` (Streamable HTTP), so an assistant can read and update the CRM. Set `CLOSER_MCP_TOKEN` and connect with the header `Authorization: Bearer <token>`. The tools are part of the app, so they change with the code on every deploy, and the server reports the commit it was built from.

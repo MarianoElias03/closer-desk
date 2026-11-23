@@ -1,6 +1,7 @@
 <script>
   import { invalidateAll } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
+  import AccountCard from '$lib/components/AccountCard.svelte';
   import { toast } from '$lib/toast.svelte.js';
   import { relative } from '$lib/fmt.js';
 
@@ -25,6 +26,8 @@
 </header>
 
 <div class="grid">
+  <AccountCard username={data.user?.username} />
+
   <section class="panel">
     <h2>Connections</h2>
     <ul class="conn">

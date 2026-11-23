@@ -77,6 +77,9 @@
 <svelte:window onfocus={checkOffer} />
 <svelte:document onvisibilitychange={checkOffer} />
 
+{#if page.url.pathname === '/login'}
+  {@render children()}
+{:else}
 <div class="shell">
   <aside class="rail">
     <a class="brand" href="/" aria-label="Closer Desk home">
@@ -106,6 +109,7 @@
     {@render children()}
   </main>
 </div>
+{/if}
 
 <Toasts />
 
