@@ -215,7 +215,7 @@ const contactProps = {
     description: 'The message id from the mail or SMS system. Logging the same id on the same lead twice is skipped, so re-importing is safe.'
   },
   follow_up: { type: 'string', description: 'For outcome callback: the day to call back, YYYY-MM-DD (today or later). Sets the lead\'s follow-up date and puts the callback on the user\'s calendar.' },
-  follow_up_time: { type: 'string', description: 'For outcome callback: optional time to call back, HH:mm 24h. Without it the calendar entry is all day.' },
+  follow_up_time: { type: 'string', description: 'For outcome callback with follow_up: the time to call back, HH:mm 24h (required with follow_up). It goes on the calendar as a 15-minute slot.' },
   count_on_dialling: { type: 'boolean', default: false }
 };
 
@@ -228,6 +228,8 @@ function logOne(offerId, a) {
       `${l.business || 'This lead'} asked not to be ${word}${l.dncNote ? ` (${l.dncNote})` : ''}. Don't contact them this way. Only their own messages (outcome inbound) can be logged on this channel.`
     );
   }
+  if (a.outcome === 'callback' && a.follow_up && !/^([01]\d|2[0-3]):[0-5]\d$/.test(a.follow_up_time || ''))
+    throw new Error('A callback needs follow_up_time (HH:mm) as well as follow_up: every callback goes on the calendar as a 15-minute slot. Ask the user what time if you do not know.');
   const now = wallClock(new Date().toISOString(), tz());
   const updated = addLeadEntry(offerId, l.id, {
     date: a.date || now.date,

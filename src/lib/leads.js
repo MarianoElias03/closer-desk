@@ -513,5 +513,8 @@ export function calendarNote(cal) {
   if (cal.added) return ', added to your calendar';
   if (cal.moved) return ', moved on your calendar';
   if (cal.removed) return ', taken off your calendar';
+  if (cal.booked) return ', 1-hour call added to your calendar';
+  if (cal.linked) return ', linked to the call already on your calendar';
+  if (cal.unbooked) return ', call taken off your calendar';
   return '';
 }

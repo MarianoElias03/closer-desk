@@ -1,4 +1,4 @@
-import { db, getSettings } from './db.js';
+import { db, getSettings, atFrom, getColdLead, updateColdLead } from './db.js';
 import { googleAccessToken } from './sync.js';
 import { dayKey, addDays } from '../time.js';
 
@@ -150,5 +150,75 @@ export async function callbackCalendarFor(leadId) {
   } catch (e) {
     console.error('[callbacks]', e);
     return { error: 'Could not reach your calendar' };
+  }
+}
+
+// ---------- booked calls ----------
+
+const BOOKED_MINUTES = 60;
+
+/**
+ * You pressed Booked and gave the call's date and time: put a 1-hour event on the calendar, titled with
+ * the offer's first call keyword ("Offroad Hybrids GamePlan Call") so the calendar sync treats it like
+ * any other booking, and link it to the lead straight away. The lead is not invited. Skipped when the
+ * lead already has a booked call (e.g. they booked through your link and it has synced).
+ */
+export async function bookCallEvent(offerId, leadId, dialId, date, time) {
+  try {
+    if (!connected()) return { error: "Google Calendar isn't connected, so the call wasn't added" };
+    const lead = getColdLead(offerId, leadId);
+    if (!lead) return null;
+    if (lead.call && !lead.call.cancelled) return { linked: true };
+    const tz = getSettings().timezone;
+    const offer = db.prepare('SELECT keywords FROM offers WHERE id = ?').get(offerId);
+    const kind = (offer?.keywords || '').split(',').map((k) => k.trim()).filter(Boolean)[0] || 'Discovery Call';
+    const who = lead.business || lead.contact || lead.phone || 'Lead';
+    const start = atFrom(date, time);
+    const end = new Date(new Date(start).getTime() + BOOKED_MINUTES * 60000).toISOString();
+    const lines = [
+      lead.contact && `Contact: ${lead.contact}`,
+      lead.phone && `Phone:- ${lead.phone}`,
+      lead.email && `Email:- ${lead.email}`,
+      (env.APP_URL || env.ORIGIN) && `Lead: ${(env.APP_URL || env.ORIGIN).replace(/\/$/, '')}/leads/${lead.id}`
+    ];
+    const body = {
+      summary: `${who} ${kind}`,
+      description: `${lines.filter(Boolean).join('\n')}\n\nBooked from Closer Desk.`,
+      start: { dateTime: start, timeZone: tz },
+      end: { dateTime: end, timeZone: tz },
+      extendedProperties: { private: { closerDeskBooked: String(lead.id) } }
+    };
+    const token = await googleAccessToken();
+    const ev = await google('POST', API, token, body);
+    db.prepare(
+      `INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, description, kind, status, source, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?) ON CONFLICT(id) DO NOTHING`
+    ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, body.description, kind, new Date().toISOString());
+    db.prepare('UPDATE lead_dials SET event_id = ? WHERE id = ?').run(ev.id, Number(dialId));
+    updateColdLead(offerId, lead.id, { callId: ev.id });
+    return { booked: true };
+  } catch (e) {
+    console.error('[booked]', e);
+    return { error: 'Could not add the call to your calendar' };
+  }
+}
+
+/**
+ * Undoing a Booked that made its own event: take the event off (only while it's still ahead) and drop
+ * the call it created. Calls you booked any other way are left alone.
+ */
+export async function unbookCallEvent(offerId, leadId, eventId) {
+  if (!eventId) return null;
+  try {
+    const call = db.prepare('SELECT start FROM calls WHERE id = ?').get(eventId);
+    const lead = getColdLead(offerId, leadId);
+    if (lead?.call?.id === eventId) updateColdLead(offerId, leadId, { callId: null });
+    if (!call || new Date(call.start) < new Date()) return null;
+    db.prepare('DELETE FROM calls WHERE id = ?').run(eventId);
+    if (connected()) await google('DELETE', `${API}/${encodeURIComponent(eventId)}`, await googleAccessToken());
+    return { unbooked: true };
+  } catch (e) {
+    console.error('[booked]', e);
+    return { error: 'Could not take the call off your calendar' };
   }
 }

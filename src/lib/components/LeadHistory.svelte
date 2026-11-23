@@ -122,7 +122,7 @@
   {/if}
   {#if f.outcome === 'callback' && 'followUp' in f}
     <label class="field">Call back on<input type="date" bind:value={f.followUp} min={today} required /></label>
-    <label class="field">At (optional)<input type="time" bind:value={f.followUpTime} title="Without a time it goes on your calendar as all day" /></label>
+    <label class="field">At<input type="time" bind:value={f.followUpTime} required title="Goes on your calendar as a 15-minute slot" /></label>
   {/if}
   {#if f.channel === 'email'}
     <label class="field wide">Subject<input bind:value={f.subject} placeholder="Subject line" /></label>

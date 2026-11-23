@@ -19,6 +19,12 @@
   let pending = $state(null); // outcome key waiting for its reason
   let cbDate = $state('');
   let cbTime = $state('');
+  // pressing Booked: when the call is, so it goes on the calendar (unless it's already there)
+  let bkDate = $state('');
+  let bkTime = $state('');
+  let bkSkip = $state(false);
+  let timeBox = $state(null);
+  const hasCall = $derived(!!(lead.call && !lead.call.cancelled));
   let other = $state('');
 
   let lastId = null;
@@ -37,12 +43,21 @@
   async function log(outcome, reason) {
     if (busy || !String(reason || '').trim()) return;
     const followUp = outcome === 'callback' ? cbDate || addDays(today, 1) : null;
+    const book = outcome === 'booked' && !hasCall && !bkSkip;
+    if (outcome === 'callback' && !cbTime) {
+      toast('Pick a time for the callback first', 'error');
+      return timeBox?.focus();
+    }
+    if (book && (!bkDate || !bkTime)) {
+      toast('Pick the date and time of the call first', 'error');
+      return timeBox?.focus();
+    }
     busy = true;
     try {
       const r = await fetch(`/api/leads/${lead.id}/dials`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ outcome, followUp, followUpTime: followUp ? cbTime : '', reason, note: note.trim() })
+        body: JSON.stringify({ outcome, followUp, followUpTime: followUp ? cbTime : '', bookDate: book ? bkDate : '', bookTime: book ? bkTime : '', bookSkip: outcome === 'booked' && !book, reason, note: note.trim() })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save that dial');
@@ -55,6 +70,8 @@
       pending = null;
       other = '';
       cbTime = '';
+      bkTime = '';
+      bkSkip = false;
       const dialId = Math.max(...j.lead.dials.map((d) => d.id));
       await onlogged?.({ lead: j.lead, dialId, outcome, name: leadName(lead) });
       await invalidateAll();
@@ -70,6 +87,7 @@
     pending = o.key;
     other = '';
     if (o.key === 'callback') cbDate = lead.followUp && lead.followUp > today ? lead.followUp : addDays(today, 1);
+    if (o.key === 'booked' && !bkDate) bkDate = addDays(today, 1);
   }
 
   // keys: 1-5 pick an outcome; once picked, 1-9 pick its reason, Esc backs out
@@ -146,7 +164,16 @@
             <button class="btn small" class:primary={cbDate === addDays(today, n)} onclick={() => (cbDate = addDays(today, n))}>{label}</button>
           {/each}
           <input type="date" bind:value={cbDate} min={today} aria-label="Callback date" />
-          <input type="time" bind:value={cbTime} aria-label="Callback time (optional)" title="Time (optional). Without one it goes on your calendar as all day" />
+          <input type="time" bind:this={timeBox} bind:value={cbTime} required aria-label="Callback time" title="Goes on your calendar as a 15-minute slot" />
+        </div>
+      {:else if pending === 'booked' && !hasCall}
+        <div class="cb">
+          <span class="k">Call on</span>
+          {#if !bkSkip}
+            <input type="date" bind:value={bkDate} min={today} aria-label="Call date" />
+            <input type="time" bind:this={timeBox} bind:value={bkTime} required aria-label="Call time" title="Goes on your calendar as a 1-hour call" />
+          {/if}
+          <label class="skip"><input type="checkbox" bind:checked={bkSkip} />Already on my calendar</label>
         </div>
       {/if}
       <div class="wtop">
@@ -320,6 +347,17 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--ink-3);
+  }
+  .skip {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .skip input {
+    height: auto;
   }
   .cb input {
     height: 32px;

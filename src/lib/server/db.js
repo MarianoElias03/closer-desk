@@ -612,6 +612,8 @@ if (!hasColumn('leads', 'dnc_note')) db.exec("ALTER TABLE leads ADD COLUMN dnc_n
 if (!hasColumn('leads', 'dnc_at')) db.exec('ALTER TABLE leads ADD COLUMN dnc_at TEXT');
 // a callback's time of day (HH:MM, optional) and the calendar event that stands for it
 if (!hasColumn('lead_dials', 'cb_time')) db.exec('ALTER TABLE lead_dials ADD COLUMN cb_time TEXT');
+// the calendar event Closer Desk made when you pressed Booked (so undo can take it back off)
+if (!hasColumn('lead_dials', 'event_id')) db.exec('ALTER TABLE lead_dials ADD COLUMN event_id TEXT');
 db.exec(`CREATE TABLE IF NOT EXISTS lead_cal (
   lead_id INTEGER PRIMARY KEY,
   offer_id INTEGER NOT NULL,
@@ -782,7 +784,7 @@ export function deleteColdLead(offerId, id) {
 }
 
 /** Log one dial on a lead. It counts on `date` in the SDR tallies. */
-const cleanTime = (t) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(t || '') ? t : null);
+export const cleanTime = (t) => (/^([01]\d|2[0-3]):[0-5]\d$/.test(t || '') ? t : null);
 
 export function logDial(offerId, leadId, { outcome, date, followUp, followUpTime, note, reason }) {
   if (!SDR_FIELDS.includes(outcome)) throw new Error('Unknown outcome');
@@ -966,7 +968,7 @@ const guessChannel = (t) => (/\b(sms|texts?|texted|txt)\b/i.test(t) ? 'sms' : /e
 const TIME_RE = /^([01]?\d|2[0-3]):([0-5]\d)$/;
 
 /** Wall-clock date + time in the business timezone -> ISO instant. */
-function atFrom(date, time) {
+export function atFrom(date, time) {
   const tz = getSettings().timezone;
   const m = String(time || '').match(TIME_RE);
   const mins = m ? Number(m[1]) * 60 + Number(m[2]) : 12 * 60;
