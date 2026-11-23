@@ -25,6 +25,23 @@
   let bkDate = $state('');
   let bkTime = $state('');
   let bkSkip = $state(false);
+  // the booking's meeting link and who to invite
+  let bkMeeting = $state('');
+  let bkLink = $state('');
+  let bkGuests = $state([]);
+  let bkNotify = $state(false);
+  let meetOpts = $state(null); // { zoom, regular }
+  async function loadMeetOpts() {
+    if (meetOpts) return;
+    try {
+      const [z, g] = await Promise.all([fetch('/api/settings/zoom').then((r) => r.json()), fetch('/api/settings/guests').then((r) => r.json())]);
+      meetOpts = { zoom: z.connected, regular: g.guests };
+      if (!bkMeeting) bkMeeting = z.connected ? 'zoom' : 'meet';
+    } catch {
+      meetOpts = { zoom: false, regular: [] };
+    }
+  }
+  const toggleGuest = (e) => (bkGuests = bkGuests.includes(e) ? bkGuests.filter((x) => x !== e) : [...bkGuests, e]);
   let timeBox = $state(null);
   const hasCall = $derived(!canBook || !!(lead.call && !lead.call.cancelled));
   let other = $state('');
@@ -54,12 +71,13 @@
       toast('Pick the date and time of the call first', 'error');
       return timeBox?.focus();
     }
+    if (book && bkMeeting === 'link' && !/^https:\/\/\S+$/.test(bkLink.trim())) return toast('Paste a full https:// meeting link', 'error');
     busy = true;
     try {
       const r = await fetch(`/api/leads/${lead.id}/dials`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ outcome, followUp, followUpTime: followUp ? cbTime : '', bookDate: book ? bkDate : '', bookTime: book ? bkTime : '', bookSkip: outcome === 'booked' && !book, reason, note: note.trim() })
+        body: JSON.stringify({ outcome, followUp, followUpTime: followUp ? cbTime : '', bookDate: book ? bkDate : '', bookTime: book ? bkTime : '', bookSkip: outcome === 'booked' && !book, bookMeeting: book ? (bkMeeting === 'link' ? bkLink.trim() : bkMeeting || undefined) : undefined, bookGuests: book ? bkGuests : [], bookNotify: book && bkNotify, reason, note: note.trim() })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save that dial');
@@ -74,6 +92,9 @@
       cbTime = '';
       bkTime = '';
       bkSkip = false;
+      bkGuests = [];
+      bkNotify = false;
+      bkLink = '';
       const dialId = Math.max(...j.lead.dials.map((d) => d.id));
       await onlogged?.({ lead: j.lead, dialId, outcome, name: leadName(lead) });
       await invalidateAll();
@@ -90,6 +111,7 @@
     other = '';
     if (o.key === 'callback') cbDate = lead.followUp && lead.followUp > today ? lead.followUp : addDays(today, 1);
     if (o.key === 'booked' && !bkDate) bkDate = addDays(today, 1);
+    if (o.key === 'booked') loadMeetOpts();
   }
 
   // keys: 1-5 pick an outcome; once picked, 1-9 pick its reason, Esc backs out
@@ -177,6 +199,29 @@
           {/if}
           <label class="skip"><input type="checkbox" bind:checked={bkSkip} />Already on my calendar</label>
         </div>
+        {#if !bkSkip && meetOpts}
+          <div class="cb">
+            <span class="k">Link</span>
+            <select bind:value={bkMeeting} aria-label="Meeting link">
+              <option value="zoom" disabled={!meetOpts.zoom}>Zoom{meetOpts.zoom ? '' : ' (connect in Settings)'}</option>
+              <option value="meet">Google Meet</option>
+              <option value="link">Paste a link</option>
+            </select>
+            {#if bkMeeting === 'link'}<input class="lnk" bind:value={bkLink} placeholder="https://…" aria-label="Meeting link" />{/if}
+          </div>
+          {#if lead.email || meetOpts.regular.length}
+            <div class="cb">
+              <span class="k">Invite</span>
+              {#if lead.email}
+                <label class="skip"><input type="checkbox" checked={bkGuests.includes(lead.email.toLowerCase())} onchange={() => toggleGuest(lead.email.toLowerCase())} />{lead.contact || lead.email}</label>
+              {/if}
+              {#each meetOpts.regular as g}
+                <label class="skip"><input type="checkbox" checked={bkGuests.includes(g.email)} onchange={() => toggleGuest(g.email)} />{g.name || g.email}</label>
+              {/each}
+              {#if bkGuests.length}<label class="skip"><input type="checkbox" bind:checked={bkNotify} />Email them the invite</label>{/if}
+            </div>
+          {/if}
+        {/if}
       {/if}
       <div class="wtop">
         <span class="k">{pendingLabel}: why?</span>
@@ -357,6 +402,18 @@
     font-size: 13px;
     font-weight: 600;
     color: var(--ink-2);
+  }
+  .cb select,
+  .lnk {
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--raised);
+    color: var(--ink);
+    padding: 0 8px;
+  }
+  .lnk {
+    min-width: 220px;
   }
   .skip input {
     height: auto;

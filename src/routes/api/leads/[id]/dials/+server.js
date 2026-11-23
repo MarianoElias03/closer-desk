@@ -29,7 +29,7 @@ export async function POST({ params, request, locals }) {
   let calendar = null;
   if (book) {
     const dialId = Math.max(...lead.dials.map((d) => d.id));
-    calendar = await bookCallEvent(locals.offer.id, params.id, dialId, b.bookDate, b.bookTime);
+    calendar = await bookCallEvent(locals.offer.id, params.id, dialId, b.bookDate, b.bookTime, { meeting: b.bookMeeting, guests: b.bookGuests, notify: !!b.bookNotify });
     lead = getColdLead(locals.offer.id, params.id);
   }
   const cb = await callbackCalendarFor(params.id);

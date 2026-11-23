@@ -1,5 +1,6 @@
 import { db, getSettings, atFrom, getColdLead, updateColdLead } from './db.js';
 import { googleAccessToken } from './sync.js';
+import { zoomConnected, createZoomMeeting, deleteZoomMeeting } from './zoom.js';
 import { dayKey, addDays } from '../time.js';
 
 /**
@@ -163,7 +164,12 @@ const BOOKED_MINUTES = 60;
  * any other booking, and link it to the lead straight away. The lead is not invited. Skipped when the
  * lead already has a booked call (e.g. they booked through your link and it has synced).
  */
-export async function bookCallEvent(offerId, leadId, dialId, date, time) {
+/**
+ * opts.meeting: 'zoom' (a new Zoom meeting, the default once Zoom is connected), 'meet' (Google Meet,
+ * the default until then), a https link, or 'none'. opts.guests: emails to invite (the lead, a
+ * teammate); opts.notify: email them the invite.
+ */
+export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = {}) {
   try {
     if (!connected()) return { error: "Google Calendar isn't connected, so the call wasn't added" };
     const lead = getColdLead(offerId, leadId);
@@ -181,22 +187,43 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time) {
       lead.email && `Email:- ${lead.email}`,
       (env.APP_URL || env.ORIGIN) && `Lead: ${(env.APP_URL || env.ORIGIN).replace(/\/$/, '')}/leads/${lead.id}`
     ];
+    const meeting = opts.meeting || (zoomConnected() ? 'zoom' : 'meet');
+    let joinUrl = null;
+    let meetingId = null;
+    let warn = null;
+    if (meeting === 'zoom') {
+      try {
+        const m = await createZoomMeeting(`${who} ${kind}`, start, end, tz);
+        joinUrl = m.joinUrl;
+        meetingId = m.id;
+      } catch (e) {
+        warn = `${e.message}. Booked with Google Meet instead.`;
+      }
+    } else if (/^https:\/\/\S+$/.test(meeting)) joinUrl = meeting;
+    const useMeet = meeting === 'meet' || (meeting === 'zoom' && !joinUrl);
+    const label = joinUrl ? (/zoom\.us/.test(joinUrl) ? 'Join Zoom' : 'Join the call') : null;
+    const guests = [...new Set((opts.guests || []).map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)))];
     const body = {
       summary: `${who} ${kind}`,
-      description: `${lines.filter(Boolean).join('\n')}\n\nBooked from Closer Desk.`,
+      description: `${label ? `${label}: ${joinUrl}\n\n` : ''}${lines.filter(Boolean).join('\n')}\n\nBooked from Closer Desk.`,
       start: { dateTime: start, timeZone: tz },
       end: { dateTime: end, timeZone: tz },
+      ...(joinUrl ? { location: joinUrl } : {}),
+      ...(useMeet ? { conferenceData: { createRequest: { requestId: `cd-book-${lead.id}-${Date.now()}`, conferenceSolutionKey: { type: 'hangoutsMeet' } } } } : {}),
+      ...(guests.length ? { attendees: guests.map((email) => ({ email })), guestsCanSeeOtherGuests: true } : {}),
       extendedProperties: { private: { closerDeskBooked: String(lead.id) } }
     };
     const token = await googleAccessToken();
-    const ev = await google('POST', API, token, body);
+    const q = new URLSearchParams({ sendUpdates: opts.notify && guests.length ? 'all' : 'none', ...(useMeet ? { conferenceDataVersion: '1' } : {}) });
+    const ev = await google('POST', `${API}?${q}`, token, body);
+    joinUrl = ev.hangoutLink || joinUrl;
     db.prepare(
-      `INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, description, kind, status, source, updated_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?) ON CONFLICT(id) DO NOTHING`
-    ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, body.description, kind, new Date().toISOString());
+      `INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, meeting_id, attendees, updated_at)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?, ?, ?) ON CONFLICT(id) DO NOTHING`
+    ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, joinUrl, body.description, kind, meetingId, JSON.stringify(guests), new Date().toISOString());
     db.prepare('UPDATE lead_dials SET event_id = ? WHERE id = ?').run(ev.id, Number(dialId));
     updateColdLead(offerId, lead.id, { callId: ev.id });
-    return { booked: true };
+    return { booked: true, invited: opts.notify && guests.length ? guests.length : 0, meeting: joinUrl ? (meetingId ? 'zoom' : useMeet ? 'meet' : 'link') : null, warn };
   } catch (e) {
     console.error('[booked]', e);
     return { error: 'Could not add the call to your calendar' };
@@ -210,11 +237,12 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time) {
 export async function unbookCallEvent(offerId, leadId, eventId) {
   if (!eventId) return null;
   try {
-    const call = db.prepare('SELECT start FROM calls WHERE id = ?').get(eventId);
+    const call = db.prepare('SELECT start, meeting_id FROM calls WHERE id = ?').get(eventId);
     const lead = getColdLead(offerId, leadId);
     if (lead?.call?.id === eventId) updateColdLead(offerId, leadId, { callId: null });
     if (!call || new Date(call.start) < new Date()) return null;
     db.prepare('DELETE FROM calls WHERE id = ?').run(eventId);
+    if (call.meeting_id) await deleteZoomMeeting(call.meeting_id).catch(() => {});
     if (connected()) await google('DELETE', `${API}/${encodeURIComponent(eventId)}`, await googleAccessToken());
     return { unbooked: true };
   } catch (e) {

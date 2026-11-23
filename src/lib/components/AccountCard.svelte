@@ -39,7 +39,7 @@
   }
 </script>
 
-<section class="panel">
+<section class="panel settings-card">
   <h2>Account</h2>
   <p class="muted">Signed in as <strong>{username}</strong>. The same sign-in works in the Android app.</p>
   <ul class="devs">

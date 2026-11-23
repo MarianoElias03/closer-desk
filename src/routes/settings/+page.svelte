@@ -2,6 +2,7 @@
   import { invalidateAll } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
   import AccountCard from '$lib/components/AccountCard.svelte';
+  import MeetingSettings from '$lib/components/MeetingSettings.svelte';
   import { toast } from '$lib/toast.svelte.js';
   import { relative } from '$lib/fmt.js';
 
@@ -27,6 +28,8 @@
 
 <div class="grid">
   <AccountCard username={data.user?.username} />
+
+  <MeetingSettings />
 
   <section class="panel">
     <h2>Connections</h2>
@@ -85,8 +88,12 @@
     gap: 18px;
     max-width: 820px;
   }
-  .panel {
+  .panel,
+  :global(.settings-card) {
     padding: 22px;
+  }
+  :global(.settings-card h2) {
+    margin-bottom: 12px;
   }
   h2 {
     margin-bottom: 12px;

@@ -9,6 +9,7 @@
   import { FILTERS, leadName, linkFor, viewQuery, consentLabel, calendarNote, leadMode } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
+  import PreCallPanel from '$lib/components/PreCallPanel.svelte';
 
   let { data } = $props();
   // how this offer's leads are worked: dialling, DM setting, or closing only (history, no pad)
@@ -273,6 +274,8 @@
           </dl>
         {/if}
       </section>
+
+      {#if takesCalls}<PreCallPanel {lead} />{/if}
 
       <section class="panel consent" class:has={lead.doNotContact.length}>
         <h2>Contact consent</h2>

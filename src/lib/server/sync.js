@@ -78,12 +78,12 @@ export async function syncCalendar() {
   let seen = 0;
   let kept = 0;
   const upsert = db.prepare(`
-    INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, updated_at)
-    VALUES(@id, @offer_id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, 'calendar', @now)
+    INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, attendees, source, updated_at)
+    VALUES(@id, @offer_id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, @attendees, 'calendar', @now)
     ON CONFLICT(id) DO UPDATE SET title=excluded.title, prospect=excluded.prospect,
       email=COALESCE(excluded.email, calls.email), phone=COALESCE(excluded.phone, calls.phone),
       start=excluded.start, end=excluded.end, join_url=excluded.join_url, description=excluded.description,
-      kind=excluded.kind, status=excluded.status`);
+      kind=excluded.kind, status=excluded.status, attendees=excluded.attendees`);
   const ids = new Set();
   do {
     const u = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
@@ -125,6 +125,7 @@ export async function syncCalendar() {
           description: desc.slice(0, 4000),
           kind,
           status: ev.status === 'cancelled' ? 'cancelled' : 'confirmed',
+          attendees: JSON.stringify((ev.attendees || []).filter((a) => !a.self && !a.resource).map((a) => a.email)),
           now: new Date().toISOString()
         });
       }

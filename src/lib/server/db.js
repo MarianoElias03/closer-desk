@@ -130,6 +130,9 @@ db.transaction(() => {
   // What you do on each offer. Offers from before this setting keep the two tabs they always had.
   if (!hasColumn('offers', 'roles')) db.exec("ALTER TABLE offers ADD COLUMN roles TEXT NOT NULL DEFAULT 'sdr,closing'");
   if (!hasColumn('calls', 'offer_id')) db.exec('ALTER TABLE calls ADD COLUMN offer_id INTEGER REFERENCES offers(id)');
+  // a Zoom meeting Closer Desk made for the booking, and the guest emails on the Google event
+  if (!hasColumn('calls', 'meeting_id')) db.exec('ALTER TABLE calls ADD COLUMN meeting_id TEXT');
+  if (!hasColumn('calls', 'attendees')) db.exec('ALTER TABLE calls ADD COLUMN attendees TEXT');
   db.prepare('UPDATE calls SET offer_id = ? WHERE offer_id IS NULL').run(first);
   db.exec('CREATE INDEX IF NOT EXISTS calls_offer_start ON calls(offer_id, start)');
 })();
@@ -351,6 +354,13 @@ function shapeCall(r) {
     start: r.start,
     end: r.end,
     joinUrl: r.join_url,
+    guests: (() => {
+      try {
+        return JSON.parse(r.attendees || '[]');
+      } catch {
+        return [];
+      }
+    })(),
     description: r.description,
     kind: r.kind,
     outcome: r.outcome,

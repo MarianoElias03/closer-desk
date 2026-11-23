@@ -4,6 +4,7 @@
   import { page } from '$app/state';
   import Icon from './Icon.svelte';
   import OutcomePicker from './OutcomePicker.svelte';
+  import BookingPanel from './BookingPanel.svelte';
   import { time, dayLabel, duration, money } from '$lib/fmt.js';
   import { dayKey } from '$lib/time.js';
   import { md } from '$lib/md.js';
@@ -78,6 +79,7 @@
       {#if call.phone}<a class="btn small" href="tel:{call.phone.replace(/\s/g, '')}"><Icon name="phone" size={15} />{call.phone}</a>{/if}
       {#if call.email}<a class="btn small" href="mailto:{call.email}"><Icon name="mail" size={15} />{call.email}</a>{/if}
       {#if call.leadId}<a class="btn small" href="/leads/{call.leadId}"><Icon name="users" size={15} />Open lead</a>{/if}
+      {#if call.leadId && !isPast}<a class="btn small" href="/leads/{call.leadId}?precall=1#precall"><Icon name="mail" size={15} />Send pre-call info</a>{/if}
       {#if call.joinUrl && !isPast}<a class="btn small primary" href={call.joinUrl} target="_blank" rel="noopener"><Icon name="video" size={15} />Join call</a>{/if}
     </div>
 
@@ -85,6 +87,8 @@
       <h3>Outcome</h3>
       <OutcomePicker value={outcome} onpick={setOutcome} disabled={saving} />
     </section>
+
+    {#key call.id + call.start}<BookingPanel {call} {tz} />{/key}
 
     <section class="grid2">
       <label class="field">Cash collected (AUD)

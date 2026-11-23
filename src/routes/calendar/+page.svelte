@@ -5,7 +5,9 @@
   import CallRow from '$lib/components/CallRow.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
   import { dayLabel, time } from '$lib/fmt.js';
-  import { addDays, dayKey, tzOffset } from '$lib/time.js';
+  import { addDays, dayKey, tzOffset, dayStartIso } from '$lib/time.js';
+  import { invalidateAll } from '$app/navigation';
+  import { toast } from '$lib/toast.svelte.js';
 
   let { data } = $props();
   const tz = $derived(data.tz);
@@ -52,6 +54,66 @@
   const tone = (c) => CALL_OUTCOMES.find((o) => o.key === c.outcome)?.tone || 'none';
   const nowMin = $derived(minutesOf(new Date().toISOString()));
 
+  // ---- drag a booking to a new time or day ----
+  let drag = $state(null); // { id, grab, day, min, moved, x0, y0 }
+  let pending = $state(null); // { call, day, min }
+  let notify = $state(false);
+  let moving = $state(false);
+  let justDragged = false;
+  const SNAP = 15;
+  const canMove = (c) => new Date(c.end) > new Date() && c.status !== 'cancelled';
+  function down(e, c) {
+    if (!canMove(c) || e.button !== 0) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    drag = { id: c.id, grab: e.clientY - r.top, day: dayKey(c.start, tz), min: minutesOf(c.start), moved: false, x0: e.clientX, y0: e.clientY };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }
+  function move(e) {
+    if (!drag) return;
+    if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 6) return;
+    drag.moved = true;
+    const col = document.elementsFromPoint(e.clientX, e.clientY).find((el) => el.dataset?.day);
+    if (!col) return;
+    const top = col.getBoundingClientRect().top;
+    const m = range.lo + (e.clientY - top - drag.grab) / PX;
+    drag.day = col.dataset.day;
+    drag.min = Math.max(0, Math.min(24 * 60 - SNAP, Math.round(m / SNAP) * SNAP));
+  }
+  function up(c) {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    if (!d.moved) return;
+    justDragged = true;
+    setTimeout(() => (justDragged = false), 50);
+    if (d.day === dayKey(c.start, tz) && d.min === minutesOf(c.start)) return;
+    notify = false;
+    pending = { call: c, day: d.day, min: d.min };
+  }
+  const isoAt = (day, min) => new Date(Date.parse(dayStartIso(day, tz)) + min * 60000).toISOString();
+  const hhmm = (min) => {
+    const h = Math.floor(min / 60), m = min % 60;
+    return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
+  };
+  async function confirmMove() {
+    const { call, day, min } = pending;
+    moving = true;
+    try {
+      const start = isoAt(day, min);
+      const end = new Date(Date.parse(start) + (Date.parse(call.end) - Date.parse(call.start))).toISOString();
+      const r = await fetch(`/api/calls/${encodeURIComponent(call.id)}/booking`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ start, end, notify }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.message || 'Could not move it');
+      toast(`${call.prospect} moved to ${dayLabel(day, { weekday: 'short', day: 'numeric', month: 'short' })}, ${hhmm(min)}${j.notified ? '. Guests emailed.' : ''}`);
+      pending = null;
+      await invalidateAll();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      moving = false;
+    }
+  }
+
   let openId = $state(null);
   const openCall = $derived(openId ? data.calls.find((c) => c.id === openId) : null);
   const weekLabel = $derived(`${dayLabel(days[0], { day: 'numeric', month: 'short' })} to ${dayLabel(days[6], { day: 'numeric', month: 'short', year: 'numeric' })}`);
@@ -93,23 +155,31 @@
         {/each}
       </div>
       {#each days as d, di}
-        <div class="daycol" class:today={d === data.today}>
+        <div class="daycol" class:today={d === data.today} data-day={d}>
           {#each hours as h}<span class="hl" style:top="{(h * 60 - range.lo) * PX}px"></span>{/each}
           {#if d === data.today && nowMin >= range.lo && nowMin <= range.hi}
             <span class="now" style:top="{(nowMin - range.lo) * PX}px"></span>
           {/if}
           {#each byDay.m[d] as c, i (c.id)}
-            {@const top = (minutesOf(c.start) - range.lo) * PX}
+            {@const dragging = drag?.id === c.id && drag.moved}
+            {@const top = ((dragging && drag.day === d ? drag.min : minutesOf(c.start)) - range.lo) * PX}
             {@const h = Math.max(26, ((new Date(c.end) - new Date(c.start)) / 60000) * PX - 2)}
             <button
               class="ev t-{tone(c)}"
               class:pending={c.outcome === 'pending'}
+              class:movable={canMove(c)}
+              class:dragging
+              class:elsewhere={dragging && drag.day !== d}
               class:short={h < 46}
               style:top="{top}px"
               style:height="{h}px"
               style:left="calc({(byDay.laneOf[c.id] / byDay.lanesOf[c.id]) * 100}% + 2px)"
               style:width="calc({100 / byDay.lanesOf[c.id]}% - 4px)"
-              onclick={() => (openId = c.id)}
+              onclick={() => !justDragged && (openId = c.id)}
+              onpointerdown={(e) => down(e, c)}
+              onpointermove={move}
+              onpointerup={() => up(c)}
+              onpointercancel={() => (drag = null)}
               in:scale={{ start: 0.85, duration: 260, delay: di * 30 + i * 20 }}
             >
               <b>{c.prospect}</b>
@@ -122,6 +192,27 @@
     </div>
   </div>
 {/key}
+
+{#if drag?.moved}
+  <div class="dragtip">{dayLabel(drag.day, { weekday: 'short', day: 'numeric', month: 'short' })}, {hhmm(drag.min)}</div>
+{/if}
+
+{#if pending}
+  <div class="scrim" role="presentation" onclick={() => !moving && (pending = null)}></div>
+  <div class="confirm panel" role="dialog" aria-modal="true" aria-label="Move this booking">
+    <h3>Move {pending.call.prospect}?</h3>
+    <p class="muted">To {dayLabel(pending.day, { weekday: 'long', day: 'numeric', month: 'long' })}, {hhmm(pending.min)}. Your Google Calendar changes too.</p>
+    {#if pending.call.guests?.length}
+      <label class="nt"><input type="checkbox" bind:checked={notify} />Email {pending.call.guests.length === 1 ? pending.call.guests[0] : `the ${pending.call.guests.length} guests`} the new time</label>
+    {:else}
+      <p class="faint small">No guests on this booking, so nobody gets emailed.</p>
+    {/if}
+    <div class="acts">
+      <button class="btn small ghost" onclick={() => (pending = null)} disabled={moving}>Cancel</button>
+      <button class="btn small primary" onclick={confirmMove} disabled={moving}>{moving ? 'Moving' : 'Move it'}</button>
+    </div>
+  </div>
+{/if}
 
 <div class="agenda">
   {#each days as d}
@@ -139,6 +230,67 @@
 {/if}
 
 <style>
+  .ev.movable {
+    cursor: grab;
+    touch-action: none;
+  }
+  .ev.dragging {
+    cursor: grabbing;
+    z-index: 5;
+    box-shadow: 0 8px 24px rgba(20, 30, 50, 0.25);
+    opacity: 0.92;
+  }
+  .ev.elsewhere {
+    opacity: 0.25;
+  }
+  .dragtip {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translateX(-50%);
+    z-index: 40;
+    background: var(--ink);
+    color: #fff;
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 14px;
+    pointer-events: none;
+  }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 30, 50, 0.35);
+    z-index: 50;
+  }
+  .confirm {
+    position: fixed;
+    z-index: 51;
+    left: 50%;
+    top: 30%;
+    transform: translateX(-50%);
+    width: min(420px, calc(100% - 32px));
+    padding: 20px;
+    display: grid;
+    gap: 10px;
+  }
+  .confirm h3,
+  .confirm p {
+    margin: 0;
+  }
+  .nt {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .confirm .acts {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
   .top {
     display: flex;
     flex-wrap: wrap;
