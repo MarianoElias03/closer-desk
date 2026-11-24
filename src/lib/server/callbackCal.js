@@ -1,4 +1,4 @@
-import { db, getSettings, atFrom, getColdLead, updateColdLead } from './db.js';
+import { db, getSettings, atFrom, getColdLead, updateColdLead, logActivity, niceWhen, niceDay } from './db.js';
 import { googleAccessToken } from './sync.js';
 import { zoomConnected, createZoomMeeting, deleteZoomMeeting } from './zoom.js';
 import { dayKey, addDays } from '../time.js';
@@ -112,11 +112,17 @@ async function run() {
         if (!ev || ev.gone || ev.status === 'cancelled') ev = await google('POST', API, token, body);
         save.run(id, x.offer_id, ev.id, x.follow_up, sigOf(x));
         (cur ? result.moved : result.added).push(id);
+        const at12 = x.time ? ` at ${((+x.time.slice(0, 2) + 11) % 12) + 1}:${x.time.slice(3)} ${+x.time.slice(0, 2) < 12 ? 'am' : 'pm'}` : '';
+        const verb = !cur ? 'added to' : cur.day !== x.follow_up ? 'moved on' : 'updated on';
+        logActivity(id, 'calendar', `Callback ${verb} your calendar: ${niceDay(x.follow_up)}${at12}`, { merge: verb === 'updated on' ? 10 : 0 });
       } else {
         // only take a callback off the calendar while it's still ahead; past ones stay as a record
         if (x.day >= today) await google('DELETE', `${API}/${encodeURIComponent(x.event_id)}`, token);
         forget.run(id);
-        if (x.day >= today) result.removed.push(id);
+        if (x.day >= today) {
+          result.removed.push(id);
+          logActivity(id, 'calendar', `Callback on ${niceDay(x.day)} taken off your calendar`);
+        }
       }
     } catch (e) {
       result.errors.push(`${id}: ${e.message || e}`);
@@ -222,7 +228,11 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = 
        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?, ?, ?) ON CONFLICT(id) DO NOTHING`
     ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, joinUrl, body.description, kind, meetingId, JSON.stringify(guests), new Date().toISOString());
     db.prepare('UPDATE lead_dials SET event_id = ? WHERE id = ?').run(ev.id, Number(dialId));
-    updateColdLead(offerId, lead.id, { callId: ev.id });
+    updateColdLead(offerId, lead.id, { callId: ev.id }, { log: false });
+    const how = joinUrl ? (meetingId ? 'Zoom' : useMeet ? 'Google Meet' : 'your link') : null;
+    logActivity(lead.id, 'call', `Call booked for ${niceWhen(start)}${how ? ` on ${how}` : ''}, added to your calendar`);
+    if (opts.notify && guests.length) logActivity(lead.id, 'mail', `Calendar invite emailed to ${guests.join(', ')}`);
+    if (warn) logActivity(lead.id, 'call', warn);
     return { booked: true, invited: opts.notify && guests.length ? guests.length : 0, meeting: joinUrl ? (meetingId ? 'zoom' : useMeet ? 'meet' : 'link') : null, warn };
   } catch (e) {
     console.error('[booked]', e);
@@ -239,8 +249,9 @@ export async function unbookCallEvent(offerId, leadId, eventId) {
   try {
     const call = db.prepare('SELECT start, meeting_id FROM calls WHERE id = ?').get(eventId);
     const lead = getColdLead(offerId, leadId);
-    if (lead?.call?.id === eventId) updateColdLead(offerId, leadId, { callId: null });
+    if (lead?.call?.id === eventId) updateColdLead(offerId, leadId, { callId: null }, { log: false });
     if (!call || new Date(call.start) < new Date()) return null;
+    logActivity(leadId, 'call', `Booked call on ${niceWhen(call.start)} taken off your calendar (Booked undone)`);
     db.prepare('DELETE FROM calls WHERE id = ?').run(eventId);
     if (call.meeting_id) await deleteZoomMeeting(call.meeting_id).catch(() => {});
     if (connected()) await google('DELETE', `${API}/${encodeURIComponent(eventId)}`, await googleAccessToken());

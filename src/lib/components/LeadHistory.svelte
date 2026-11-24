@@ -12,8 +12,15 @@
   // newest first; sheet history with no date goes last
   let show = $state('');
   const all = $derived([...lead.dials].reverse());
-  const entries = $derived(show ? all.filter((d) => d.channel === show) : all);
+  // updates: edits, PDFs, invites, calendar changes. They sit among the contacts by time.
+  const acts = $derived([...(lead.activity || [])].reverse().map((a) => ({ ...a, act: true })));
+  const merged = $derived(
+    [...all.filter((d) => d.date), ...acts].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0)).concat(all.filter((d) => !d.date))
+  );
+  const entries = $derived(show === 'updates' ? acts : show ? all.filter((d) => d.channel === show) : merged);
   const byChannel = $derived(Object.fromEntries(CHANNELS.map((c) => [c.key, all.filter((d) => d.channel === c.key).length])));
+  const ACT_ICON = { edit: 'edit', notes: 'edit', details: 'edit', created: 'plus', import: 'upload', precall: 'dollar', pdf: 'upload', 'pdf-view': 'external', mail: 'mail', call: 'video', calendar: 'calendar', score: 'chart' };
+  const actLong = (a) => a.detail && (a.detail.length > 160 || a.detail.split('\n').length > 3);
   const outcome = entryType;
   // only calls you made can go in the Dialling numbers, and DM outcomes in the DM Setting numbers
   const countable = (f) => (f.channel === 'dm' ? DM_KEYS.includes(f.outcome) : f.channel === 'call' && !!f.outcome && !DM_KEYS.filter((k) => k !== 'booked').includes(f.outcome) && f.outcome !== 'inbound');
@@ -165,24 +172,38 @@
     </form>
   {/if}
 
-  {#if all.length && Object.values(byChannel).filter(Boolean).length > 1}
+  {#if merged.length && Object.values(byChannel).filter(Boolean).length + (acts.length ? 1 : 0) > 1}
     <div class="filter" role="tablist" aria-label="Show contacts by">
-      <button role="tab" aria-selected={!show} class:on={!show} onclick={() => (show = '')}>All<span class="n">{all.length}</span></button>
+      <button role="tab" aria-selected={!show} class:on={!show} onclick={() => (show = '')}>All<span class="n">{merged.length}</span></button>
       {#each CHANNELS.filter((c) => byChannel[c.key]) as c}
         <button role="tab" aria-selected={show === c.key} class:on={show === c.key} onclick={() => (show = c.key)}>
           <Icon name={c.icon} size={13} />{c.plural}<span class="n">{byChannel[c.key]}</span>
         </button>
       {/each}
+      {#if acts.length}
+        <button role="tab" aria-selected={show === 'updates'} class:on={show === 'updates'} onclick={() => (show = 'updates')}>
+          <Icon name="edit" size={13} />Updates<span class="n">{acts.length}</span>
+        </button>
+      {/if}
     </div>
   {/if}
 
   {#if entries.length}
     <ol class="timeline">
-      {#each entries as d (d.id)}
-        {@const o = outcome(d.outcome)}
-        <li class="t-{o?.tone || 'none'}">
+      {#each entries as d (d.act ? `a${d.id}` : d.id)}
+        {@const o = d.act ? null : outcome(d.outcome)}
+        <li class="t-{o?.tone || 'none'}" class:act={d.act}>
           <i class="dot"></i>
-          {#if editing === d.id}
+          {#if d.act}
+            <div class="what">
+              <span class="when"><Icon name={ACT_ICON[d.kind] || 'edit'} size={12} />Update, {whenLabel(d.at, tz)}{d.actor ? `, by ${d.actor}` : ''}</span>
+              <span class="act-text">{d.text}</span>
+              {#if d.detail && d.kind === 'notes'}
+                <div class="body" class:folded={actLong(d) && !unfolded.includes(`a${d.id}`)}>{d.detail}</div>
+                {#if actLong(d)}<button class="more" onclick={() => flip(`a${d.id}`)}>{unfolded.includes(`a${d.id}`) ? 'Show less' : 'Show all'}</button>{/if}
+              {/if}
+            </div>
+          {:else if editing === d.id}
             <form class="entry-form" onsubmit={(e) => save(e, d)}>
               {@render fields(form, 'Save', () => (editing = null))}
             </form>
@@ -211,8 +232,8 @@
         </li>
       {/each}
     </ol>
-  {:else if all.length}
-    <p class="faint small">No {channelOf(show).plural.toLowerCase()} with this lead yet.</p>
+  {:else if merged.length}
+    <p class="faint small">No {show === 'updates' ? 'updates' : channelOf(show).plural.toLowerCase()} with this lead yet.</p>
   {:else}
     <p class="faint small">Nothing yet. Dials from the dialler land here with their date and time.</p>
   {/if}
@@ -402,6 +423,16 @@
     border-radius: 50%;
     background: var(--tone);
     box-shadow: 0 0 0 3px var(--raised);
+  }
+  .act .dot {
+    background: var(--line);
+    width: 8px;
+    height: 8px;
+    left: -5px;
+    top: 13px;
+  }
+  .act-text {
+    color: var(--ink-2);
   }
   .what {
     display: grid;

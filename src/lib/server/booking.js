@@ -1,4 +1,4 @@
-import { db, getSettings, setSetting, getCall, closeDayFromCalls, syncCallFollowUps } from './db.js';
+import { db, getSettings, setSetting, getCall, closeDayFromCalls, syncCallFollowUps, logActivity, niceWhen } from './db.js';
 import { googleAccessToken } from './sync.js';
 import { zoomConnected, createZoomMeeting, moveZoomMeeting, deleteZoomMeeting } from './zoom.js';
 import { dayKey } from '../time.js';
@@ -167,10 +167,27 @@ export async function editBooking(callId, change) {
     new Date().toISOString(),
     callId
   );
+  // 4. the lead's timeline
+  const beforeGuests = new Set((before.guests || []).map((g) => String(g.email || g).toLowerCase()));
+  const afterGuests = ev ? guestsOf(ev).map((g) => g.email.toLowerCase()) : [];
+  const lines = [];
+  if (moved) lines.push(`Call moved to ${niceWhen(start)}`);
+  if (want !== 'keep') lines.push(want === 'zoom' ? 'New Zoom link' : want === 'meet' ? 'Switched to Google Meet' : want ? 'Meeting link changed' : 'Meeting link removed');
+  if (Array.isArray(change.guests) && ev) {
+    const added = afterGuests.filter((g) => !beforeGuests.has(g));
+    const gone = [...beforeGuests].filter((g) => !afterGuests.includes(g));
+    if (added.length) lines.push(`invited ${added.join(', ')}`);
+    if (gone.length) lines.push(`removed ${gone.join(', ')}`);
+  }
+  const notified = !!change.notify && !!ev;
+  for (const l of db.prepare('SELECT id FROM leads WHERE call_id = ?').all(callId)) {
+    if (lines.length) logActivity(l.id, 'call', lines.map((x, i) => (i ? x : x[0].toUpperCase() + x.slice(1))).join('; '));
+    if (notified && afterGuests.length) logActivity(l.id, 'mail', `Calendar ${moved || want !== 'keep' ? 'update' : 'invite'} emailed to ${afterGuests.join(', ')}`);
+  }
   if (moved) {
     const tzName = tz;
     for (const iso of new Set([before.start, start])) closeDayFromCalls(before.offerId, dayKey(iso, tzName));
-    syncCallFollowUps();
+    syncCallFollowUps({ log: false });
   }
   return { call: getCall(callId), guests: ev ? guestsOf(ev) : [], notified: !!change.notify && !!ev, warnings: note };
 }

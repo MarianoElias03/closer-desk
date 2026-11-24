@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { dayKey, dayStartIso, addDays as addDaysKey } from '../time.js';
 import { wallClock } from '../leads.js';
 
@@ -542,6 +543,7 @@ export function createLead(offerId, handle, date) {
   if (!h) throw new Error('Add their IG handle or name');
   return db.transaction(() => {
     const id = insertLead(offerId, { contact: h });
+    logActivity(id, 'created', 'Lead added');
     addDmStep(offerId, id, 'contacted', date);
     return getLead(offerId, id);
   })();
@@ -655,6 +657,10 @@ if (!hasColumn('leads', 'dnc_at')) db.exec('ALTER TABLE leads ADD COLUMN dnc_at 
 if (!hasColumn('lead_dials', 'cb_time')) db.exec('ALTER TABLE lead_dials ADD COLUMN cb_time TEXT');
 // the calendar event Closer Desk made when you pressed Booked (so undo can take it back off)
 if (!hasColumn('lead_dials', 'event_id')) db.exec('ALTER TABLE lead_dials ADD COLUMN event_id TEXT');
+// the prospect-score criteria ticked on a lead (JSON list of labels; null = not scored yet), and the
+// sheet's "Why This Score" text they were read from, so a re-import with a new reason re-reads them
+if (!hasColumn('leads', 'score_ticks')) db.exec('ALTER TABLE leads ADD COLUMN score_ticks TEXT');
+if (!hasColumn('leads', 'score_src')) db.exec('ALTER TABLE leads ADD COLUMN score_src TEXT');
 db.exec(`CREATE TABLE IF NOT EXISTS lead_cal (
   lead_id INTEGER PRIMARY KEY,
   offer_id INTEGER NOT NULL,
@@ -662,6 +668,80 @@ db.exec(`CREATE TABLE IF NOT EXISTS lead_cal (
   day TEXT NOT NULL,
   sig TEXT NOT NULL
 )`);
+
+// ---------- activity: every change to a lead that isn't a contact (edits, PDFs, emails, bookings) ----------
+// Kept apart from lead_dials so it never touches the numbers, stages or "last contact".
+db.exec(`CREATE TABLE IF NOT EXISTS lead_activity (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  actor TEXT NOT NULL DEFAULT '',
+  at TEXT NOT NULL
+)`);
+db.exec('CREATE INDEX IF NOT EXISTS lead_activity_lead ON lead_activity(lead_id)');
+
+/** Who is making changes right now (e.g. Alfred over MCP). Wrap work in actor.run('Alfred', fn). */
+export const actor = new AsyncLocalStorage();
+
+/**
+ * Note something that happened to a lead. `merge` (minutes): if the last entry of the same kind is
+ * that recent, replace it instead of adding another (typing in a box saves many times).
+ */
+export function logActivity(leadId, kind, text, { detail = '', merge = 0 } = {}) {
+  const id = Number(leadId);
+  if (!id || !text) return;
+  const now = new Date().toISOString();
+  const by = actor.getStore() || '';
+  if (merge) {
+    const last = db.prepare('SELECT id, kind, at, actor FROM lead_activity WHERE lead_id = ? ORDER BY id DESC LIMIT 1').get(id);
+    if (last && last.kind === kind && last.actor === by && Date.now() - Date.parse(last.at) < merge * 60000) {
+      db.prepare('UPDATE lead_activity SET text = ?, detail = ?, at = ? WHERE id = ?').run(String(text).slice(0, 300), String(detail).slice(0, 2000), now, last.id);
+      return;
+    }
+  }
+  if (!db.prepare('SELECT 1 FROM leads WHERE id = ?').get(id)) return;
+  db.prepare('INSERT INTO lead_activity(lead_id, kind, text, detail, actor, at) VALUES(?, ?, ?, ?, ?, ?)').run(id, kind, String(text).slice(0, 300), String(detail).slice(0, 2000), by, now);
+}
+
+export const leadActivity = (leadId) =>
+  db.prepare('SELECT * FROM lead_activity WHERE lead_id = ? ORDER BY at, id').all(Number(leadId)).map((r) => ({ id: r.id, kind: r.kind, text: r.text, detail: r.detail, actor: r.actor, at: r.at }));
+
+const FIELD_NAME = { business: 'Business', contact: 'Name', phone: 'Mobile', email: 'Email', suburb: 'Suburb', category: 'Category', score: 'Score' };
+
+/** One line per field that changed: "Email added: a@b.com", "Mobile changed from 04.. to 04..". */
+function logLeadEdits(leadId, cur, f) {
+  const curRow = { business: cur.business, contact: cur.contact, phone: cur.phone, email: cur.email, suburb: cur.suburb, category: cur.category, score: cur.score };
+  for (const [k, label] of Object.entries(FIELD_NAME)) {
+    if (!(k in f)) continue;
+    const a = curRow[k] ?? '';
+    const b = f[k] ?? '';
+    if (String(a) === String(b)) continue;
+    if (a === '' || a === null) logActivity(leadId, 'edit', `${label} added: ${b}`);
+    else if (b === '' || b === null) logActivity(leadId, 'edit', `${label} removed (was ${a})`);
+    else logActivity(leadId, 'edit', `${label} changed from ${a} to ${b}`);
+  }
+  if ('notes' in f && f.notes !== cur.notes)
+    logActivity(leadId, 'notes', f.notes ? (cur.notes ? 'Notes edited' : 'Notes added') : 'Notes cleared', { detail: f.notes, merge: 15 });
+  if ('extra' in f && f.extra !== JSON.stringify(cur.extra)) {
+    const before = new Map(cur.extra);
+    const after = new Map(JSON.parse(f.extra));
+    const changed = [...after].filter(([k, v]) => before.get(k) !== v).map(([k]) => k);
+    const gone = [...before.keys()].filter((k) => !after.has(k));
+    const words = [...changed.map((k) => (before.has(k) ? `${k} changed` : `${k} added`)), ...gone.map((k) => `${k} removed`)];
+    if (words.length) logActivity(leadId, 'details', `Details: ${words.join(', ')}`, { merge: 15 });
+  }
+  if ('follow_up' in f && !('call_id' in f) && (f.follow_up || null) !== (cur.followUp || null))
+    logActivity(leadId, 'edit', f.follow_up ? `Follow-up set to ${niceDay(f.follow_up)}` : 'Follow-up cleared');
+}
+
+export function niceDay(d) {
+  return new Intl.DateTimeFormat('en-AU', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(d + 'T00:00:00Z'));
+}
+export function niceWhen(iso) {
+  return new Intl.DateTimeFormat('en-AU', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', timeZone: getSettings().timezone }).format(new Date(iso));
+}
 
 export const DIAL_OUTCOMES = SDR_FIELDS;
 
@@ -737,6 +817,13 @@ function shapeColdLead(r, dials) {
     suburb: r.suburb,
     category: r.category,
     score: r.score,
+    scoreTicks: (() => {
+      try {
+        return r.score_ticks ? JSON.parse(r.score_ticks) : null;
+      } catch {
+        return null;
+      }
+    })(),
     followUp: r.follow_up,
     notes: r.notes,
     extra: JSON.parse(r.extra || '[]'),
@@ -788,10 +875,12 @@ const needsName = (f) => !f.business && !f.contact && !f.phone;
 export function createColdLead(offerId, o) {
   const f = leadFields(o);
   if (needsName(f)) throw new Error('Add a business, a name or a number');
-  return getColdLead(offerId, insertLead(offerId, f));
+  const id = insertLead(offerId, f);
+  logActivity(id, 'created', 'Lead added');
+  return getColdLead(offerId, id);
 }
 
-export function updateColdLead(offerId, id, patch) {
+export function updateColdLead(offerId, id, patch, { log = true } = {}) {
   const f = leadFields(patch);
   if ('callId' in patch) {
     const cid = patch.callId ? String(patch.callId) : null;
@@ -810,6 +899,11 @@ export function updateColdLead(offerId, id, patch) {
   if (!cur) return null;
   if (needsName({ business: f.business ?? cur.business, contact: f.contact ?? cur.contact, phone: f.phone ?? cur.phone })) throw new Error('Add a business, a name or a number');
   const keys = Object.keys(f);
+  if (log) logLeadEdits(cur.id, cur, f);
+  if (log && 'call_id' in f && (f.call_id || null) !== (cur.call?.id || null)) {
+    const c = f.call_id && db.prepare('SELECT title, start FROM calls WHERE id = ?').get(f.call_id);
+    logActivity(cur.id, 'call', c ? `Linked to the call ${c.title ? `"${c.title}" ` : ''}on ${niceWhen(c.start)}` : 'Call unlinked');
+  }
   if (keys.length)
     db.prepare(`UPDATE leads SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = @id AND offer_id = @offerId`).run({
       ...f,
@@ -917,11 +1011,14 @@ export function importColdLeads(offerId, rows) {
         }
         const keys = Object.keys(sets);
         if (keys.length) db.prepare(`UPDATE leads SET ${keys.map((k) => `${k} = @${k}`).join(', ')}, updated_at = @now WHERE id = @id`).run({ ...sets, now, id: match.id });
+        const filled = keys.filter((k) => FIELD_NAME[k]).map((k) => FIELD_NAME[k].toLowerCase());
+        if (filled.length || 'extra' in sets) logActivity(match.id, 'import', `Updated from an import${filled.length ? `: ${filled.join(', ')} filled in` : ''}`);
         Object.assign(match, sets);
         id = match.id;
         out.updated++;
       } else {
         id = insertLead(offerId, f);
+        logActivity(id, 'import', 'Added from an import');
         const row = { id, ...f };
         if (f.phone_key) byPhone.set(f.phone_key, row);
         if (f.email) byEmail.set(f.email.toLowerCase(), row);
@@ -950,7 +1047,7 @@ export function linkLeadCalls() {
  * A booked lead's follow-up date is its call's date, so the list, the lead page and sorting all show
  * when the call is. Kept in step on every calendar sync, so a rescheduled call moves it too.
  */
-export function syncCallFollowUps() {
+export function syncCallFollowUps({ log = true } = {}) {
   const tz = getSettings().timezone;
   const rows = db
     .prepare("SELECT l.id, l.follow_up, c.start FROM leads l JOIN calls c ON c.id = l.call_id WHERE c.status != 'cancelled'")
@@ -961,6 +1058,7 @@ export function syncCallFollowUps() {
     const day = dayKey(r.start, tz);
     if (r.follow_up !== day) {
       set.run(day, new Date().toISOString(), r.id);
+      if (log && r.follow_up) logActivity(r.id, 'call', `Call moved to ${niceWhen(r.start)} (changed on the calendar)`);
       n++;
     }
   }
@@ -981,8 +1079,10 @@ function matchLeadCalls() {
   if (!leads.length) return 0;
   const taken = new Set(db.prepare('SELECT call_id FROM leads WHERE call_id IS NOT NULL').all().map((r) => r.call_id));
   const calls = db.prepare("SELECT id, title, prospect, email, phone, start FROM calls WHERE status != 'cancelled' ORDER BY start").all();
-  const set = db.prepare('UPDATE leads SET call_id = ?, updated_at = ? WHERE id = ?');
+  // the follow-up becomes the call's day straight away, so the next follow-up sync only logs real moves
+  const set = db.prepare('UPDATE leads SET call_id = ?, follow_up = ?, updated_at = ? WHERE id = ?');
   const move = db.prepare('UPDATE calls SET offer_id = ? WHERE id = ?');
+  const tz = getSettings().timezone;
   let linked = 0;
   for (const l of leads) {
     const from = new Date(l.booked_on + 'T00:00:00Z').getTime() - 2 * 864e5;
@@ -994,8 +1094,9 @@ function matchLeadCalls() {
       open.find((c) => names.some((n) => `${c.title} ${c.prospect}`.toLowerCase().includes(n)));
     if (hit) {
       taken.add(hit.id);
-      set.run(hit.id, new Date().toISOString(), l.id);
+      set.run(hit.id, dayKey(hit.start, tz), new Date().toISOString(), l.id);
       move.run(l.offer_id, hit.id);
+      logActivity(l.id, 'call', `Matched to the booked call ${hit.title ? `"${hit.title}" ` : ''}on ${niceWhen(hit.start)} from your calendar`);
       linked++;
     }
   }

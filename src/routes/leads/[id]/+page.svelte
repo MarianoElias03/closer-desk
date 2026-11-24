@@ -5,6 +5,7 @@
   import LeadSummary from '$lib/components/LeadSummary.svelte';
   import LeadPad from '$lib/components/LeadPad.svelte';
   import LeadHistory from '$lib/components/LeadHistory.svelte';
+  import ScorePanel from '$lib/components/ScorePanel.svelte';
   import { CALL_OUTCOMES } from '$lib/stats.js';
   import { FILTERS, leadName, linkFor, viewQuery, consentLabel, calendarNote, leadMode } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
@@ -16,6 +17,8 @@
   const mode = $derived(leadMode(data.offer));
   const takesCalls = $derived(data.offer.roles.includes('closing'));
   const lead = $derived(data.lead);
+  // the pitch angle and score reason live in the score panel
+  const sheetFacts = $derived(mode === 'dm' ? lead.extra : lead.extra.filter(([k]) => !/^(pitch angle|why this score|score reason|why|score breakdown)$/i.test(k.trim())));
   const tz = $derived(data.tz);
   const query = $derived(viewQuery(data.view));
   const listLabel = $derived(FILTERS.find((f) => f.key === data.view.filter).label);
@@ -308,11 +311,13 @@
         {/if}
       </section>
 
-      {#if lead.extra.length}
+      {#if mode !== 'dm'}<ScorePanel {lead} scoring={data.scoring} />{/if}
+
+      {#if sheetFacts.length}
         <section class="panel">
           <h2>From your sheet</h2>
           <dl class="facts">
-            {#each lead.extra as [k, v]}
+            {#each sheetFacts as [k, v]}
               <div>
                 <dt>{k}</dt>
                 <dd>{#if linkFor(v)}<a href={linkFor(v)} target="_blank" rel="noopener">{v}</a>{:else}{v}{/if}</dd>

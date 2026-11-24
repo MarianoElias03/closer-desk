@@ -1,4 +1,4 @@
-import { db, getSettings, setSetting, getColdLead, getOffer, addLeadEntry } from './db.js';
+import { db, getSettings, setSetting, getColdLead, getOffer, addLeadEntry, logActivity } from './db.js';
 import { Page, renderPdf, pdfSafe } from './pdf.js';
 import { sendMail } from './mail.js';
 import { wallClock } from '../leads.js';
@@ -36,6 +36,13 @@ export function savePrecall(leadId, p) {
     return Number.isFinite(x) ? Math.min(max, Math.max(0, x)) : null;
   };
   const row = { calls: num(p.calls, 10000), value: num(p.value, 10_000_000), rate: Math.max(1, Math.min(100, num(p.rate, 100) ?? 30)) };
+  const was = getPrecall(leadId);
+  if (was.calls !== row.calls || was.value !== row.value || was.rate !== row.rate) {
+    const f = figures(row);
+    const parts = [row.calls != null && `${row.calls} missed calls a week`, row.value != null && `${aud(row.value)} average job`, `${row.rate}% become customers`].filter(Boolean);
+    // typing saves many times; one entry per sitting
+    logActivity(leadId, 'precall', `Pre-call numbers ${was.calls == null && was.value == null ? 'added' : 'updated'}: ${parts.join(', ')}${f.ready ? ` (${aud(f.year)} a year)` : ''}`, { merge: 15 });
+  }
   db.prepare(
     `INSERT INTO lead_precall(lead_id, calls, value, rate, updated_at) VALUES(?, ?, ?, ?, ?)
      ON CONFLICT(lead_id) DO UPDATE SET calls = excluded.calls, value = excluded.value, rate = excluded.rate, updated_at = excluded.updated_at`
