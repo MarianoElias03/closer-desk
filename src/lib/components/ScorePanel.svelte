@@ -1,12 +1,14 @@
 <script>
-  // A lead's prospect score as criteria you tick, the sum written out, and Advanced: the points each
-  // criterion is worth on this offer (changing them re-scores every lead on it).
+  // A lead's prospect score: each category (Website, Google reviews, ...) is scored out of 5 from the
+  // criteria you tick in it, and the score is the average of the categories. Advanced sets the
+  // categories, their criteria and points, and each category's weight for this offer.
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
   import { toast } from '$lib/toast.svelte.js';
 
   let { lead, scoring } = $props();
+  const MAX = 5;
 
   const norm = (s) => String(s || '').trim().toLowerCase();
   const pitch = $derived((lead.extra.find(([k]) => /^pitch angle$/i.test(k.trim())) || [])[1] || '');
@@ -15,15 +17,32 @@
     ticks = [...(lead.scoreTicks || [])];
   });
   const isOn = (label) => ticks.some((t) => norm(t) === norm(label));
-  const on = $derived(scoring.criteria.filter((c) => isOn(c.label)));
-  const total = $derived(on.reduce((a, c) => a + c.points, 0));
-  const worked = $derived(Math.max(0, Math.min(scoring.cap, total)));
-  const byHand = $derived(lead.scoreTicks && lead.score != null && lead.score !== worked);
-  const pts = (n) => `${n} ${Math.abs(n) === 1 ? 'pt' : 'pts'}`;
+  const round1 = (n) => Math.round(n * 10) / 10;
+  const cats = $derived(
+    scoring.categories.map((c) => {
+      const raw = c.criteria.filter((x) => isOn(x.label) && x.points > 0).reduce((a, x) => a + x.points, 0);
+      return { ...c, raw, score: Math.min(MAX, raw) };
+    })
+  );
+  const weightSum = $derived(cats.reduce((a, c) => a + c.weight, 0));
+  const avg = $derived(weightSum ? round1(cats.reduce((a, c) => a + c.score * c.weight, 0) / weightSum) : 0);
+  // ticked criteria worth minus points come off the average
+  const minuses = $derived(scoring.categories.flatMap((c) => c.criteria).filter((x) => x.points < 0 && isOn(x.label)));
+  const worked = $derived(round1(Math.max(0, Math.min(MAX, avg + minuses.reduce((a, x) => a + x.points, 0)))));
+  const signed = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${-n}` : '0');
+  const evenWeights = $derived(cats.every((c) => c.weight === 1));
+  const byHand = $derived(lead.score != null && lead.score !== worked);
 
   let busy = $state(false);
-  async function toggle(label) {
-    const next = isOn(label) ? ticks.filter((t) => norm(t) !== norm(label)) : [...ticks, label];
+  async function toggle(cat, label) {
+    let next;
+    if (isOn(label)) next = ticks.filter((t) => norm(t) !== norm(label));
+    else {
+      const crit = cat.criteria.find((x) => x.label === label);
+      // "pick one" criteria in a category replace each other
+      const others = crit.one ? cat.criteria.filter((x) => x.one && x.label !== label).map((x) => norm(x.label)) : [];
+      next = [...ticks.filter((t) => !others.includes(norm(t))), label];
+    }
     ticks = next;
     busy = true;
     try {
@@ -40,17 +59,18 @@
 
   // ---- Advanced ----
   let adv = $state(false);
-  let rows = $state([]);
-  let cap = $state(5);
+  let edit = $state([]);
   let saving = $state(false);
+  const snapshot = () => JSON.stringify(scoring.categories.map((c) => ({ name: c.name, weight: c.weight, criteria: c.criteria.map((x) => ({ label: x.label, points: x.points, one: !!x.one })) })));
   function openAdv() {
-    rows = scoring.criteria.map((c) => ({ label: c.label, points: c.points, was: c.label }));
-    cap = scoring.cap;
+    edit = scoring.categories.map((c) => ({ name: c.name, weight: c.weight, criteria: c.criteria.map((x) => ({ label: x.label, points: x.points, one: !!x.one, was: x.label })) }));
     adv = !adv;
   }
   const advDirty = $derived(
-    adv && (Number(cap) !== scoring.cap || rows.length !== scoring.criteria.length || rows.some((r, i) => r.label !== scoring.criteria[i]?.label || Number(r.points) !== scoring.criteria[i]?.points))
+    adv &&
+      JSON.stringify(edit.map((c) => ({ name: c.name, weight: Number(c.weight), criteria: c.criteria.map((x) => ({ label: x.label, points: Number(x.points), one: !!x.one })) }))) !== snapshot()
   );
+  const catTotal = (c) => c.criteria.filter((x) => Number(x.points) > 0).reduce((a, x) => a + Number(x.points), 0);
   async function saveAdv(e) {
     e.preventDefault();
     saving = true;
@@ -58,11 +78,11 @@
       const r = await fetch('/api/scoring', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cap: Number(cap), criteria: rows.filter((r) => r.label.trim()).map((r) => ({ label: r.label, points: Number(r.points), was: r.was })) })
+        body: JSON.stringify({ categories: edit.filter((c) => c.name.trim()).map((c) => ({ ...c, weight: Number(c.weight), criteria: c.criteria.filter((x) => x.label.trim()).map((x) => ({ ...x, points: Number(x.points) })) })) })
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.message || 'Could not save');
-      toast(j.changed ? `Points saved. ${j.changed} lead${j.changed === 1 ? '' : 's'} re-scored` : 'Points saved');
+      toast(j.changed ? `Scoring saved. ${j.changed} lead${j.changed === 1 ? '' : 's'} re-scored` : 'Scoring saved');
       adv = false;
       await invalidateAll();
     } catch (err) {
@@ -76,47 +96,68 @@
 <section class="panel score">
   <div class="head">
     <h2>Prospect score</h2>
-    <span class="badge" class:none={lead.score == null}>{lead.score ?? '–'}<small>/ {scoring.cap}</small></span>
+    <span class="badge" class:none={lead.score == null}>{lead.score ?? '–'}<small>/ {MAX}</small></span>
   </div>
   {#if pitch}<p class="pitch">{pitch}</p>{/if}
 
-  {#if scoring.criteria.length}
-    <div class="crit" role="group" aria-label="Scoring criteria">
-      {#each scoring.criteria as c (c.label)}
-        <label class="chip" class:on={isOn(c.label)}>
-          <input type="checkbox" checked={isOn(c.label)} disabled={busy} onchange={() => toggle(c.label)} />
-          {c.label}<b>{c.points > 0 ? '+' : ''}{c.points}</b>
-        </label>
+  {#if cats.length}
+    <div class="cats">
+      {#each cats as c (c.name)}
+        <div class="cat">
+          <div class="cat-head">
+            <span class="cat-name">{c.name}{#if !evenWeights}<span class="faint"> ×{c.weight}</span>{/if}</span>
+            <span class="cat-score" class:full={c.score === MAX}>{c.score}<small>/ {MAX}</small></span>
+          </div>
+          <div class="bar"><i style="width:{(c.score / MAX) * 100}%"></i></div>
+          <div class="crit" role="group" aria-label={c.name}>
+            {#each c.criteria as x (x.label)}
+              <button type="button" class="chip" class:on={isOn(x.label)} aria-pressed={isOn(x.label)} disabled={busy} onclick={() => toggle(c, x.label)}>
+                <i class="box" class:round={x.one}>{#if isOn(x.label)}<Icon name="check" size={10} stroke={3.5} />{/if}</i>
+                {x.label}<b class:neg={x.points < 0}>{signed(x.points)}</b>
+              </button>
+            {/each}
+          </div>
+          {#if c.raw > MAX}<p class="faint tiny">Adds up to {c.raw}, counted as {MAX}</p>{/if}
+        </div>
       {/each}
     </div>
     <p class="eq">
-      {#if on.length}
-        {#each on as c, i}{i ? ' + ' : ''}<span>{c.label} <b>{c.points}</b></span>{/each} = <strong>{pts(total)}</strong>{#if total > scoring.cap}<span class="faint">, capped at {scoring.cap}</span>{/if}
-      {:else}
-        <span class="faint">Nothing ticked: 0 pts</span>
-      {/if}
+      ({#each cats as c, i}{i ? ' + ' : ''}<span>{c.name} <b>{c.score}</b>{#if !evenWeights && c.weight !== 1}×{c.weight}{/if}</span>{/each}) ÷ {weightSum}{#if minuses.length}{' = '}{avg}{#each minuses as m}{' '}<span class="minus">− {-m.points} ({m.label})</span>{/each}{/if}{' = '}<strong>{worked} / {MAX}</strong>
     </p>
-    {#if byHand}<p class="faint small">The score was set to {lead.score} by hand or by your sheet. Tick or untick a criterion to use the sum.</p>{/if}
+    {#if byHand}<p class="faint small">The score is {lead.score} from your sheet or set by hand. Tick or untick something to use the categories.</p>{/if}
   {:else}
-    <p class="faint small">No scoring criteria on this offer yet. Add them under Advanced, or import a sheet with a "Why This Score" column.</p>
+    <p class="faint small">No scoring categories on this offer yet. Add them under Advanced, or import a sheet with a "Why This Score" column.</p>
   {/if}
 
   <button class="adv-btn" onclick={openAdv} aria-expanded={adv}><Icon name="settings" size={13} />Advanced</button>
   {#if adv}
     <form class="adv" transition:slide={{ duration: 160 }} onsubmit={saveAdv}>
-      <p class="faint small">Points for each criterion on this offer. Saving works out the score again for every lead on it.</p>
-      {#each rows as r, i}
-        <div class="row">
-          <input class="lbl" bind:value={r.label} placeholder="Criterion, e.g. No website" aria-label="Criterion" />
-          <input class="num" type="number" step="1" bind:value={r.points} aria-label="Points for {r.label}" />
-          <button type="button" class="ico" onclick={() => (rows = rows.filter((_, j) => j !== i))} aria-label="Remove {r.label}"><Icon name="x" size={14} /></button>
-        </div>
+      <p class="faint small">Each category is scored out of 5 (points past 5 are ignored), and the score is the average of the categories. Give a category more weight to make it count more. Minus points (e.g. −1 for a 5-star rating) come off the final score, which never goes below 0. "Pick one" criteria can't be ticked together. Saving re-scores every lead on this offer.</p>
+      {#each edit as c, ci}
+        <fieldset class="ecat">
+          <div class="row">
+            <input class="lbl name" bind:value={c.name} placeholder="Category, e.g. Website" aria-label="Category name" />
+            <label class="w">Weight<input class="num" type="number" min="0" max="10" step="0.5" bind:value={c.weight} /></label>
+            <button type="button" class="ico" onclick={() => (edit = edit.filter((_, j) => j !== ci))} aria-label="Remove category {c.name}"><Icon name="x" size={14} /></button>
+          </div>
+          {#each c.criteria as x, xi}
+            <div class="row sub">
+              <input class="lbl" bind:value={x.label} placeholder="Criterion, e.g. No website" aria-label="Criterion" />
+              <input class="num" class:neg={Number(x.points) < 0} type="number" min="-5" max="5" step="0.5" bind:value={x.points} aria-label="Points for {x.label}" />
+              <label class="one" title="Only one of these can be ticked in this category"><input type="checkbox" bind:checked={x.one} />Pick one</label>
+              <button type="button" class="ico" onclick={() => (c.criteria = c.criteria.filter((_, j) => j !== xi))} aria-label="Remove {x.label}"><Icon name="x" size={14} /></button>
+            </div>
+          {/each}
+          <div class="row sub foot">
+            <button type="button" class="link" onclick={() => (c.criteria = [...c.criteria, { label: '', points: 1, one: false, was: '' }])}><Icon name="plus" size={13} />Add criterion</button>
+            {#if catTotal(c) < MAX}<span class="faint tiny">Most it can reach: {catTotal(c)} of 5</span>{/if}
+          </div>
+        </fieldset>
       {/each}
-      <button type="button" class="btn small ghost" onclick={() => (rows = [...rows, { label: '', points: 1, was: '' }])}><Icon name="plus" size={14} />Add criterion</button>
-      <label class="row capr">Highest score<input class="num" type="number" min="1" step="1" bind:value={cap} /></label>
+      <button type="button" class="btn small ghost" onclick={() => (edit = [...edit, { name: '', weight: 1, criteria: [{ label: '', points: 5, one: false, was: '' }] }])}><Icon name="plus" size={14} />Add category</button>
       <div class="acts">
         <button type="button" class="btn small ghost" onclick={() => (adv = false)}>Cancel</button>
-        <button class="btn small primary" disabled={!advDirty || saving}><Icon name="check" size={14} />{saving ? 'Saving' : 'Save points'}</button>
+        <button class="btn small primary" disabled={!advDirty || saving}><Icon name="check" size={14} />{saving ? 'Saving' : 'Save scoring'}</button>
       </div>
     </form>
   {/if}
@@ -142,8 +183,9 @@
     color: var(--blue);
     font-variant-numeric: tabular-nums;
   }
-  .badge small {
-    font-size: 13px;
+  .badge small,
+  .cat-score small {
+    font-size: 12px;
     color: var(--ink-3);
     font-weight: 700;
     margin-left: 3px;
@@ -158,6 +200,43 @@
     border-radius: 10px;
     background: var(--surface);
   }
+  .cats {
+    display: grid;
+    gap: 14px;
+  }
+  .cat {
+    display: grid;
+    gap: 6px;
+  }
+  .cat-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-size: 13.5px;
+  }
+  .cat-name {
+    font-weight: 700;
+  }
+  .cat-score {
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .cat-score.full {
+    color: var(--blue);
+  }
+  .bar {
+    height: 5px;
+    border-radius: 999px;
+    background: var(--line-2);
+    overflow: hidden;
+  }
+  .bar i {
+    display: block;
+    height: 100%;
+    background: var(--blue);
+    border-radius: 999px;
+    transition: width 0.2s;
+  }
   .crit {
     display: flex;
     flex-wrap: wrap;
@@ -167,17 +246,37 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 10px;
+    padding: 4px 10px;
     border-radius: 999px;
     border: 1px solid var(--line);
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
     color: var(--ink-2);
   }
-  .chip input {
-    margin: 0;
-    accent-color: var(--blue);
+  .chip {
+    background: transparent;
+    font-family: inherit;
+  }
+  .chip:disabled {
+    cursor: progress;
+  }
+  .box {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1.5px solid var(--ink-3);
+    display: inline-grid;
+    place-items: center;
+    color: #fff;
+    flex: none;
+  }
+  .box.round {
+    border-radius: 50%;
+  }
+  .chip.on .box {
+    background: var(--blue);
+    border-color: var(--blue);
   }
   .chip b {
     color: var(--ink-3);
@@ -191,10 +290,22 @@
   .chip.on b {
     color: var(--blue);
   }
+  .chip b.neg,
+  .minus {
+    color: var(--red);
+  }
+  .chip.on b.neg {
+    color: var(--red);
+  }
+  input.num.neg {
+    color: var(--red);
+  }
   .eq {
     margin: 0;
-    font-size: 13.5px;
+    font-size: 13px;
     line-height: 1.6;
+    padding-top: 8px;
+    border-top: 1px solid var(--line-2);
   }
   .eq b {
     font-variant-numeric: tabular-nums;
@@ -203,7 +314,12 @@
     font-size: 13px;
     margin: 0;
   }
-  .adv-btn {
+  .tiny {
+    font-size: 11.5px;
+    margin: 0;
+  }
+  .adv-btn,
+  .link {
     justify-self: start;
     display: inline-flex;
     align-items: center;
@@ -216,42 +332,70 @@
     padding: 4px 0;
     cursor: pointer;
   }
-  .adv-btn:hover {
+  .adv-btn:hover,
+  .link:hover {
     color: var(--ink);
   }
   .adv {
     display: grid;
-    gap: 8px;
+    gap: 10px;
     padding: 12px;
     border-radius: 12px;
     background: var(--surface);
     border: 1px solid var(--line-2);
+  }
+  .ecat {
+    margin: 0;
+    padding: 10px;
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    background: var(--raised);
+    display: grid;
+    gap: 6px;
   }
   .row {
     display: flex;
     gap: 6px;
     align-items: center;
   }
-  .row input {
-    height: 34px;
+  .row.sub {
+    padding-left: 12px;
+  }
+  .row.foot {
+    justify-content: space-between;
+  }
+  .row input:not([type='checkbox']) {
+    height: 32px;
     border-radius: 8px;
     border: 1px solid var(--line);
     padding: 0 8px;
-    font-size: 13.5px;
+    font-size: 13px;
     background: var(--raised);
     color: var(--ink);
+  }
+  .name {
+    font-weight: 700;
   }
   .lbl {
     flex: 1;
     min-width: 0;
   }
   .num {
-    width: 70px;
+    width: 58px;
   }
-  .capr {
-    font-size: 13px;
-    font-weight: 600;
-    justify-content: space-between;
+  .w,
+  .one {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .one input {
+    margin: 0;
+    accent-color: var(--blue);
   }
   .ico {
     border: 0;
