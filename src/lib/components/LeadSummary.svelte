@@ -1,10 +1,13 @@
 <script>
   import Icon from './Icon.svelte';
+  import EmailComposer from './EmailComposer.svelte';
   import { isDue, leadName, pickExtra, linkFor, stageOf, whenLabel, sinceLabel, entryType, entryLabel, channelOf, consentLabel, withReason } from '$lib/leads.js';
   import { ddmm } from '$lib/fmt.js';
 
   /** The top of a lead: score, name, status, call button, pitch angle and research, past calls. */
   let { lead, today, tz, title = 'h3', chips = true } = $props();
+  // the Email button opens a box to write and send it here (no mail app)
+  let composing = $state(false);
 
   const PITCH = /pitch|angle/i;
   const WHY = /why/i;
@@ -53,13 +56,15 @@
       {#if lead.doNotContact?.includes('email')}
         <span class="btn small blocked" title="They asked not to be emailed"><Icon name="mail" size={15} />No emails</span>
       {:else}
-        <a class="btn small" href="mailto:{lead.email}"><Icon name="mail" size={15} />Email</a>
+        <button class="btn small" onclick={() => (composing = true)} title="Write an email to {lead.email}, or send one of your automations"><Icon name="mail" size={15} />Email</button>
       {/if}
     {/if}
     {#each lead.extra.filter(([, v]) => linkFor(v)) as [k, v]}
       <a class="btn small" href={linkFor(v)} target="_blank" rel="noopener"><Icon name="external" size={14} />{k}</a>
     {/each}
   </div>
+
+  {#if composing}<EmailComposer {lead} onclose={() => (composing = false)} />{/if}
 
   {#if pickExtra(lead, PITCH)}
     <div class="pitch">

@@ -281,7 +281,6 @@
                 <dd>
                   {#if v == null || v === ''}<span class="faint">Not set</span>
                   {:else if k === 'Mobile' && !lead.doNotContact.includes('call')}<a href="tel:{String(v).replace(/[^\d+]/g, '')}">{v}</a>
-                  {:else if k === 'Email' && !lead.doNotContact.includes('email')}<a href="mailto:{v}">{v}</a>
                   {:else}{v}{/if}
                 </dd>
               </div>

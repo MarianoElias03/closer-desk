@@ -273,9 +273,9 @@ export function fill(text, values) {
 }
 const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // [words](https://link) becomes a link; bare links are linked too. The signature goes in as Gmail has it.
-const MD_LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
-const SIG_MARK = '%%SIGNATURE%%';
-function toHtml(text, signature = '') {
+export const MD_LINK = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
+export const SIG_MARK = '%%SIGNATURE%%';
+export function toHtml(text, signature = "") {
   const links = [];
   const body = escHtml(String(text).replace(MD_LINK, (m, t, u) => `%%LINK${links.push([t, u]) - 1}%%`))
     .replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)]/g, (u) => `<a href="${u}" style="color:#2563c9">${u}</a>`)
@@ -530,4 +530,47 @@ export function startAutomations() {
   setTimeout(tick, 5000);
   timer = setInterval(tick, 60 * 1000);
   process.once('sveltekit:shutdown', () => clearInterval(timer));
+}
+
+// ---------- sending one by hand (the Email box on a lead) ----------
+
+/**
+ * Every email automation for this lead's offer, filled in for this lead: subject and message (with
+ * [words](links) kept, the signature left to the Email box), the account it sends from, and why it
+ * wouldn't go on its own (e.g. no booked call yet), so you can fix it before sending.
+ */
+export function draftsFor(leadId) {
+  const lead = leadRow(leadId);
+  if (!lead) return [];
+  const live = lead.call_id ? callRow(lead.call_id) : null;
+  const call = live && live.status !== 'cancelled' ? live : null;
+  return db
+    .prepare("SELECT * FROM automations WHERE channel = 'email' ORDER BY enabled DESC, id")
+    .all()
+    .map(shape)
+    .filter((a) => a.offerId == null || a.offerId === lead.offer_id)
+    .map((a) => {
+      const { values } = context(a, { lead, call });
+      const msg = compose(a, { lead, call });
+      const plain = { ...values, signature: '' };
+      return {
+        id: a.id,
+        name: a.name || 'Untitled automation',
+        enabled: a.enabled,
+        fromEmail: a.fromEmail,
+        subject: fill(a.subject, plain).replace(/\s+/g, ' ').trim(),
+        message: fill(a.body, plain).replace(/[ \t]+$/gm, '').trim(),
+        problem: msg.skip && msg.skip !== 'No email address' ? msg.skip : null
+      };
+    });
+}
+
+/** Note a hand-sent automation in its run log (shows under the automation as sent). */
+export function recordManualRun(automationId, leadId, { to, subject, messageId }) {
+  if (!getAutomation(automationId)) return;
+  const now = nowIso();
+  db.prepare(
+    `INSERT OR IGNORE INTO automation_runs(automation_id, event_key, lead_id, due_at, status, reason, to_email, subject, message_id, created_at, done_at)
+     VALUES(?, ?, ?, ?, 'sent', 'Sent by hand from the lead', ?, ?, ?, ?, ?)`
+  ).run(Number(automationId), `manual:${leadId}:${Date.now()}`, Number(leadId), now, to, subject, messageId, now, now);
 }
