@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
+  import ClashCheck from './ClashCheck.svelte';
   import { toast } from '$lib/toast.svelte.js';
   import { wallClock } from '$lib/leads.js';
   import { dayStartIso } from '$lib/time.js';
@@ -45,6 +46,22 @@
     }
   }
   onMount(load);
+  let moveTo = $state(null);
+  async function moveCal() {
+    busy = true;
+    try {
+      const r = await fetch(`/api/calls/${encodeURIComponent(call.id)}/booking`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ moveTo }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.message || 'Could not move it');
+      toast(`Moved to ${j.calendar || 'your personal calendar'}${j.copied ? ', with a copy on your personal calendar' : ''}`);
+      moveTo = null;
+      await invalidateAll();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      busy = false;
+    }
+  }
 
   const startIso = $derived(date && /^\d{2}:\d{2}$/.test(time) ? new Date(Date.parse(dayStartIso(date, tz)) + (Number(time.slice(0, 2)) * 60 + Number(time.slice(3))) * 60000).toISOString() : null);
   const moved = $derived(!!info && !!startIso && (startIso !== new Date(info.start).toISOString() || mins !== Math.round((Date.parse(info.end) - Date.parse(info.start)) / 60000)));
@@ -113,6 +130,17 @@
         </select>
       </label>
     </div>
+    {#if moved}<ClashCheck start={startIso} minutes={mins} ignore={[call.id]} />{/if}
+    {#if info.onGoogle && info.editable && info.calendars?.length > 1}
+      <div class="movecal">
+        <span class="faint small-cal">On {info.calendar ? `${info.calendar}'s calendar` : 'your personal calendar'}</span>
+        <select bind:value={moveTo} aria-label="Move to calendar">
+          <option value={null}>Move to another calendar…</option>
+          {#each info.calendars.filter((c) => c.acct !== (info.calendar || '')) as c}<option value={c.acct}>{c.acct || 'Personal'}</option>{/each}
+        </select>
+        {#if moveTo !== null}<button class="btn small" onclick={moveCal} disabled={busy}>Move</button>{/if}
+      </div>
+    {:else if info.calendar}<p class="faint small-cal">On {info.calendar}'s calendar</p>{/if}
 
     <div class="meet">
       <span class="k">Meeting link</span>
@@ -175,6 +203,16 @@
     align-items: center;
     gap: 7px;
     margin: 0;
+  }
+  .movecal {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .small-cal {
+    margin: 0;
+    font-size: 13px;
   }
   .when {
     display: grid;

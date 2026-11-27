@@ -1,5 +1,5 @@
 import { db, getSettings, setSetting, getCall, closeDayFromCalls, syncCallFollowUps, logActivity, niceWhen } from './db.js';
-import { googleAccessToken } from './sync.js';
+import { tokenFor, personalOn, updateCopy, conflicts, clashNote, allCalendars, makeCopy, deleteCopy, bookingSetup } from './calendars.js';
 import { zoomConnected, createZoomMeeting, moveZoomMeeting, deleteZoomMeeting } from './zoom.js';
 import { dayKey } from '../time.js';
 
@@ -13,7 +13,8 @@ import { dayKey } from '../time.js';
 
 const API = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
 const env = process.env;
-const googleOn = () => Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REFRESH_TOKEN);
+// a call on another account's calendar (cal_account) works even without the personal one
+const googleOn = (acct) => Boolean(acct) || personalOn();
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ---- regular guests (e.g. a teammate you often bring onto calls), set in Settings ----
@@ -36,12 +37,12 @@ export function setRegularGuests(list) {
 
 // ---- Google ----
 
-async function gcal(method, path, body, query = {}) {
+async function gcal(acct, method, path, body, query = {}) {
   const u = new URL(API + path);
   for (const [k, v] of Object.entries(query)) u.searchParams.set(k, String(v));
   const r = await fetch(u, {
     method,
-    headers: { authorization: `Bearer ${await googleAccessToken()}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+    headers: { authorization: `Bearer ${await tokenFor(acct)}`, ...(body ? { 'content-type': 'application/json' } : {}) },
     body: body ? JSON.stringify(body) : undefined
   });
   const j = await r.json().catch(() => ({}));
@@ -70,11 +71,12 @@ function withJoinLine(desc, url) {
 export async function bookingInfo(callId) {
   const call = getCall(callId);
   if (!call) throw new Error('Call not found');
-  const row = db.prepare('SELECT source, meeting_id FROM calls WHERE id = ?').get(callId);
-  const base = { id: call.id, start: call.start, end: call.end, joinUrl: call.joinUrl, meetingId: row?.meeting_id || null, regular: regularGuests(), zoom: zoomConnected() };
-  if (row?.source === 'manual' || !googleOn()) return { ...base, onGoogle: false, guests: [], editable: true };
+  const row = db.prepare('SELECT source, meeting_id, cal_account FROM calls WHERE id = ?').get(callId);
+  const acct = row?.cal_account || '';
+  const base = { calendar: acct, calendars: allCalendars(), id: call.id, start: call.start, end: call.end, joinUrl: call.joinUrl, meetingId: row?.meeting_id || null, regular: regularGuests(), zoom: zoomConnected() };
+  if (row?.source === 'manual' || !googleOn(acct)) return { ...base, onGoogle: false, guests: [], editable: true };
   try {
-    const ev = await gcal('GET', `/${encodeURIComponent(callId)}`);
+    const ev = await gcal(acct, 'GET', `/${encodeURIComponent(callId)}`);
     return { ...base, onGoogle: true, editable: ev.organizer?.self !== false, organizer: ev.organizer?.email || '', guests: guestsOf(ev), joinUrl: joinUrlOf(ev) || call.joinUrl };
   } catch (e) {
     return { ...base, onGoogle: false, guests: [], editable: true, problem: e.message };
@@ -91,7 +93,8 @@ export async function bookingInfo(callId) {
 export async function editBooking(callId, change) {
   const before = getCall(callId);
   if (!before) throw new Error('Call not found');
-  const row = db.prepare('SELECT source, meeting_id FROM calls WHERE id = ?').get(callId);
+  const row = db.prepare('SELECT source, meeting_id, cal_account, copy_id FROM calls WHERE id = ?').get(callId);
+  const acct = row?.cal_account || '';
   const tz = getSettings().timezone;
   const start = change.start ? new Date(change.start).toISOString() : before.start;
   const end = change.end ? new Date(change.end).toISOString() : change.start ? new Date(Date.parse(start) + (Date.parse(before.end) - Date.parse(before.start))).toISOString() : before.end;
@@ -123,8 +126,13 @@ export async function editBooking(callId, change) {
 
   // 2. Google Calendar
   let ev = null;
-  if (row?.source !== 'manual' && googleOn()) {
-    const cur = await gcal('GET', `/${encodeURIComponent(callId)}`);
+  // a new time is checked against all your calendars (it never clashes with itself or its copy)
+  if (moved) {
+    const busy = await conflicts(start, end, [callId, row?.copy_id]).catch(() => null);
+    if (busy?.clashes.length) note.push(clashNote(busy.clashes, tz));
+  }
+  if (row?.source !== 'manual' && googleOn(acct)) {
+    const cur = await gcal(acct, 'GET', `/${encodeURIComponent(callId)}`);
     const patch = {};
     const query = { sendUpdates: change.notify ? 'all' : 'none' };
     if (moved) {
@@ -152,8 +160,10 @@ export async function editBooking(callId, change) {
       patch.attendees = [...keepSelf, ...emails.map((e) => existing.get(e) || { email: e })];
       patch.guestsCanSeeOtherGuests = true;
     }
-    if (Object.keys(patch).length) ev = await gcal('PATCH', `/${encodeURIComponent(callId)}`, patch, query);
+    if (Object.keys(patch).length) ev = await gcal(acct, 'PATCH', `/${encodeURIComponent(callId)}`, patch, query);
     else ev = cur;
+    // the private copy on your personal calendar follows the new time and link
+    if (row?.copy_id && Object.keys(patch).length) await updateCopy(row.copy_id, ev, callId, acct).catch((e) => note.push(`The personal copy didn't update (${e.message})`));
     joinUrl = joinUrlOf(ev) || joinUrl;
   }
 
@@ -190,4 +200,53 @@ export async function editBooking(callId, change) {
     syncCallFollowUps({ log: false });
   }
   return { call: getCall(callId), guests: ev ? guestsOf(ev) : [], notified: !!change.notify && !!ev, warnings: note };
+}
+
+/**
+ * Move a booking to another of your calendars (e.g. from personal to your work one). The event is
+ * made again there with the same time, link, details and guests (nobody is emailed), the old one is
+ * removed, and the call keeps everything it had in Closer Desk (lead, outcome, recording). With
+ * copy, a private copy goes on your personal calendar.
+ */
+export async function moveBooking(callId, acct, { copy } = {}) {
+  const row = db.prepare('SELECT * FROM calls WHERE id = ?').get(callId);
+  if (!row) throw new Error('Call not found');
+  if (row.source === 'manual') throw new Error("This call was added by hand, so it isn't on a calendar");
+  const from = row.cal_account || '';
+  acct = String(acct || '');
+  if (!allCalendars().some((c) => c.acct === acct)) throw new Error(`${acct || 'Your personal calendar'} isn't connected with calendar access`);
+  if (from === acct) throw new Error("It's already on that calendar");
+  const cur = await gcal(from, 'GET', `/${encodeURIComponent(callId)}`);
+  if (cur.organizer && cur.organizer.self === false) throw new Error(`This booking was made on ${cur.organizer.email}'s calendar, so it can't be moved from here`);
+  const body = {
+    summary: cur.summary,
+    description: cur.description || '',
+    location: cur.location || '',
+    start: cur.start,
+    end: cur.end,
+    ...(cur.attendees?.length ? { attendees: cur.attendees.filter((a) => !a.self && !a.resource).map((a) => ({ email: a.email, ...(a.displayName ? { displayName: a.displayName } : {}) })), guestsCanSeeOtherGuests: true } : {}),
+    ...(cur.extendedProperties ? { extendedProperties: cur.extendedProperties } : {})
+  };
+  // a Google Meet link belongs to the old event, so keep it as a plain link
+  if (cur.hangoutLink && !body.location) body.location = cur.hangoutLink;
+  const ev = await gcal(acct, 'POST', '', body, { sendUpdates: 'none' });
+  db.transaction(() => {
+    db.prepare('UPDATE calls SET id = ?, cal_account = ?, copy_id = NULL, updated_at = ? WHERE id = ?').run(ev.id, acct, new Date().toISOString(), callId);
+    db.prepare('UPDATE leads SET call_id = ? WHERE call_id = ?').run(ev.id, callId);
+    db.prepare('UPDATE lead_dials SET event_id = ? WHERE event_id = ?').run(ev.id, callId);
+    try {
+      db.prepare('UPDATE automation_runs SET call_id = ? WHERE call_id = ?').run(ev.id, callId);
+    } catch {}
+  })();
+  await gcal(from, 'DELETE', `/${encodeURIComponent(callId)}`, null, { sendUpdates: 'none' }).catch(() => {});
+  if (row.copy_id) await deleteCopy(row.copy_id);
+  const wantCopy = copy ?? (acct && bookingSetup(row.offer_id).copy);
+  let copied = false;
+  if (acct && wantCopy && personalOn()) {
+    await makeCopy(ev, ev.id, acct);
+    copied = true;
+  }
+  const where = acct ? `${acct}'s calendar${copied ? ', with a copy on your personal calendar' : ''}` : 'your personal calendar';
+  for (const l of db.prepare('SELECT id FROM leads WHERE call_id = ?').all(ev.id)) logActivity(l.id, 'call', `Booked call on ${niceWhen(row.start)} moved to ${where}`);
+  return { id: ev.id, calendar: acct, copied };
 }

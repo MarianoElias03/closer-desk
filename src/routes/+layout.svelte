@@ -20,6 +20,7 @@
     { href: '/closing', label: 'Closing', icon: 'handshake', role: 'closing' },
     { href: '/calendar', label: 'Calendar', icon: 'calendar' },
     { href: '/overall', label: 'Overall', icon: 'chart' },
+    { href: '/automations', label: 'Automations', short: 'Auto', icon: 'bolt' },
     { href: '/settings', label: 'Settings', icon: 'settings' }
   ];
   // Only the tabs for the roles picked on the open offer.
@@ -92,7 +93,7 @@
       {#each nav as n}
         <a href={hrefFor(n)} class:active={active(n.href)} aria-current={active(n.href) ? 'page' : undefined}>
           <Icon name={n.icon} size={19} />
-          <span>{n.label}</span>
+          <span class="lbl">{n.label}</span>{#if n.short}<span class="lbl-s">{n.short}</span>{/if}
         </a>
       {/each}
     </nav>
@@ -219,6 +220,9 @@
   .timer-m {
     display: none;
   }
+  .lbl-s {
+    display: none;
+  }
   .sync {
     display: flex;
     gap: 10px;
@@ -289,8 +293,20 @@
     }
     nav {
       grid-auto-flow: column;
-      grid-auto-columns: 1fr;
+      grid-auto-columns: minmax(0, 1fr);
       width: 100%;
+    }
+    nav a span {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    nav a:has(.lbl-s) .lbl {
+      display: none;
+    }
+    .lbl-s {
+      display: inline;
     }
     nav a {
       flex-direction: column;

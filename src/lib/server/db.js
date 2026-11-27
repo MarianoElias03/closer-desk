@@ -134,6 +134,9 @@ db.transaction(() => {
   // a Zoom meeting Closer Desk made for the booking, and the guest emails on the Google event
   if (!hasColumn('calls', 'meeting_id')) db.exec('ALTER TABLE calls ADD COLUMN meeting_id TEXT');
   if (!hasColumn('calls', 'attendees')) db.exec('ALTER TABLE calls ADD COLUMN attendees TEXT');
+  // which Google account's calendar the event lives on ('' = your personal one) and its personal copy
+  if (!hasColumn('calls', 'cal_account')) db.exec("ALTER TABLE calls ADD COLUMN cal_account TEXT NOT NULL DEFAULT ''");
+  if (!hasColumn('calls', 'copy_id')) db.exec('ALTER TABLE calls ADD COLUMN copy_id TEXT');
   db.prepare('UPDATE calls SET offer_id = ? WHERE offer_id IS NULL').run(first);
   db.exec('CREATE INDEX IF NOT EXISTS calls_offer_start ON calls(offer_id, start)');
 })();

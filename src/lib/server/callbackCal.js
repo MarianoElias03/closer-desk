@@ -1,6 +1,7 @@
 import { db, getSettings, atFrom, getColdLead, updateColdLead, logActivity, niceWhen, niceDay } from './db.js';
 import { googleAccessToken } from './sync.js';
 import { zoomConnected, createZoomMeeting, deleteZoomMeeting } from './zoom.js';
+import { bookingTarget, gapi, makeCopy, deleteCopy, conflicts, clashNote, personalOn } from './calendars.js';
 import { dayKey, addDays } from '../time.js';
 
 /**
@@ -177,7 +178,8 @@ const BOOKED_MINUTES = 60;
  */
 export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = {}) {
   try {
-    if (!connected()) return { error: "Google Calendar isn't connected, so the call wasn't added" };
+    const target = bookingTarget(offerId);
+    if (!target.acct && !personalOn()) return { error: "Google Calendar isn't connected, so the call wasn't added" };
     const lead = getColdLead(offerId, leadId);
     if (!lead) return null;
     if (lead.call && !lead.call.cancelled) return { linked: true };
@@ -196,14 +198,17 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = 
     const meeting = opts.meeting || (zoomConnected() ? 'zoom' : 'meet');
     let joinUrl = null;
     let meetingId = null;
-    let warn = null;
+    const warns = target.warn ? [target.warn] : [];
+    // anything already at that time on any of your calendars (warn, don't stop the booking)
+    const busy = await conflicts(start, end).catch(() => null);
+    if (busy?.clashes.length) warns.push(clashNote(busy.clashes, tz));
     if (meeting === 'zoom') {
       try {
         const m = await createZoomMeeting(`${who} ${kind}`, start, end, tz);
         joinUrl = m.joinUrl;
         meetingId = m.id;
       } catch (e) {
-        warn = `${e.message}. Booked with Google Meet instead.`;
+        warns.push(`${e.message}. Booked with Google Meet instead.`);
       }
     } else if (/^https:\/\/\S+$/.test(meeting)) joinUrl = meeting;
     const useMeet = meeting === 'meet' || (meeting === 'zoom' && !joinUrl);
@@ -219,21 +224,30 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = 
       ...(guests.length ? { attendees: guests.map((email) => ({ email })), guestsCanSeeOtherGuests: true } : {}),
       extendedProperties: { private: { closerDeskBooked: String(lead.id) } }
     };
-    const token = await googleAccessToken();
-    const q = new URLSearchParams({ sendUpdates: opts.notify && guests.length ? 'all' : 'none', ...(useMeet ? { conferenceDataVersion: '1' } : {}) });
-    const ev = await google('POST', `${API}?${q}`, token, body);
+    const ev = await gapi(target.acct, 'POST', '', body, { sendUpdates: opts.notify && guests.length ? 'all' : 'none', ...(useMeet ? { conferenceDataVersion: '1' } : {}) });
     joinUrl = ev.hangoutLink || joinUrl;
     db.prepare(
-      `INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, meeting_id, attendees, updated_at)
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?, ?, ?) ON CONFLICT(id) DO NOTHING`
-    ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, joinUrl, body.description, kind, meetingId, JSON.stringify(guests), new Date().toISOString());
+      `INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, source, meeting_id, attendees, updated_at, cal_account)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', 'calendar', ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`
+    ).run(ev.id, offerId, body.summary, who, lead.email || null, lead.phone || null, start, end, joinUrl, body.description, kind, meetingId, JSON.stringify(guests), new Date().toISOString(), target.acct);
+    let copied = false;
+    if (target.copy) {
+      try {
+        await makeCopy(ev, ev.id, target.acct);
+        copied = true;
+      } catch (e) {
+        warns.push(`The copy on your personal calendar didn't go on (${e.message})`);
+      }
+    }
     db.prepare('UPDATE lead_dials SET event_id = ? WHERE id = ?').run(ev.id, Number(dialId));
     updateColdLead(offerId, lead.id, { callId: ev.id }, { log: false });
     const how = joinUrl ? (meetingId ? 'Zoom' : useMeet ? 'Google Meet' : 'your link') : null;
-    logActivity(lead.id, 'call', `Call booked for ${niceWhen(start)}${how ? ` on ${how}` : ''}, added to your calendar`);
+    const where = target.acct ? `${target.acct}'s calendar${copied ? ', with a copy on your personal calendar' : ''}` : 'your calendar';
+    logActivity(lead.id, 'call', `Call booked for ${niceWhen(start)}${how ? ` on ${how}` : ''}, added to ${where}`);
+    const warn = warns.join('. ') || null;
     if (opts.notify && guests.length) logActivity(lead.id, 'mail', `Calendar invite emailed to ${guests.join(', ')}`);
     if (warn) logActivity(lead.id, 'call', warn);
-    return { booked: true, invited: opts.notify && guests.length ? guests.length : 0, meeting: joinUrl ? (meetingId ? 'zoom' : useMeet ? 'meet' : 'link') : null, warn };
+    return { booked: true, where: target.acct ? `${target.acct}'s calendar${copied ? ' (copy on personal)' : ''}` : '', invited: opts.notify && guests.length ? guests.length : 0, meeting: joinUrl ? (meetingId ? 'zoom' : useMeet ? 'meet' : 'link') : null, warn };
   } catch (e) {
     console.error('[booked]', e);
     return { error: 'Could not add the call to your calendar' };
@@ -247,14 +261,15 @@ export async function bookCallEvent(offerId, leadId, dialId, date, time, opts = 
 export async function unbookCallEvent(offerId, leadId, eventId) {
   if (!eventId) return null;
   try {
-    const call = db.prepare('SELECT start, meeting_id FROM calls WHERE id = ?').get(eventId);
+    const call = db.prepare('SELECT start, meeting_id, cal_account, copy_id FROM calls WHERE id = ?').get(eventId);
     const lead = getColdLead(offerId, leadId);
     if (lead?.call?.id === eventId) updateColdLead(offerId, leadId, { callId: null }, { log: false });
     if (!call || new Date(call.start) < new Date()) return null;
-    logActivity(leadId, 'call', `Booked call on ${niceWhen(call.start)} taken off your calendar (Booked undone)`);
+    logActivity(leadId, 'call', `Booked call on ${niceWhen(call.start)} taken off ${call.cal_account ? `${call.cal_account}'s calendar` : 'your calendar'}${call.copy_id ? ' and the personal copy' : ''} (Booked undone)`);
     db.prepare('DELETE FROM calls WHERE id = ?').run(eventId);
     if (call.meeting_id) await deleteZoomMeeting(call.meeting_id).catch(() => {});
-    if (connected()) await google('DELETE', `${API}/${encodeURIComponent(eventId)}`, await googleAccessToken());
+    if (call.copy_id) await deleteCopy(call.copy_id);
+    if (call.cal_account || connected()) await gapi(call.cal_account, 'DELETE', `/${encodeURIComponent(eventId)}`);
     return { unbooked: true };
   } catch (e) {
     console.error('[booked]', e);

@@ -2,6 +2,7 @@
   // Settings: the Zoom connection for booking links, and regular guests (e.g. a teammate) offered on bookings.
   import { onMount } from 'svelte';
   import Icon from './Icon.svelte';
+  import SignatureEditor from './SignatureEditor.svelte';
   import { toast } from '$lib/toast.svelte.js';
 
   let zoom = $state(null);
@@ -24,6 +25,53 @@
     if (!r.ok) throw new Error(j.message || 'That did not work');
     return j;
   }
+  // which calendar booked calls go on (for the open offer)
+  let cal = $state(null);
+  let calBusy = $state(false);
+  const loadCal = async () => (cal = await fetch('/api/settings/calendar').then((r) => r.json()));
+  async function saveCal(change) {
+    calBusy = true;
+    try {
+      const r = await fetch('/api/settings/calendar', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ book: cal.book, copy: cal.copy, ...change }) });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.message || 'Could not save');
+      cal = { ...cal, ...j };
+      toast(j.book ? `Booked calls go on ${j.book}${j.copy ? ', with a copy on your personal calendar' : ''}` : 'Booked calls go on your personal calendar');
+    } catch (e) {
+      toast(e.message, 'error');
+      loadCal();
+    } finally {
+      calBusy = false;
+    }
+  }
+  let syncing = $state(false);
+  async function syncNow() {
+    syncing = true;
+    try {
+      const { result } = await mailAct({ action: 'syncMail' });
+      const n = Object.values(result).reduce((t, v) => t + (typeof v === 'number' ? v : 0), 0);
+      const err = Object.values(result).find((v) => v?.error);
+      toast(err ? err.error : n ? `${n} new email${n === 1 ? '' : 's'} added to leads` : 'No new emails with leads', err ? 'error' : undefined);
+      loadMail();
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      syncing = false;
+    }
+  }
+  async function refreshSig(a) {
+    try {
+      const { signature } = await mailAct({ action: 'signature', email: a.email });
+      toast(signature ? 'Signature copied from Gmail' : 'Gmail has no signature set for that address', signature ? undefined : 'error');
+      loadMail();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  }
+  function reconnect(a) {
+    hint = a.email;
+    startConnect();
+  }
   async function startConnect() {
     try {
       const { url } = await mailAct({ action: 'start', hint: hint.trim() });
@@ -37,11 +85,12 @@
     e.preventDefault();
     try {
       const { account } = await mailAct({ action: 'finish', pasted });
-      toast(`${account.email} connected`);
+      toast(`${account.email} connected${account.calendar ? ', with calendar access' : ". Calendar access wasn't ticked, so it can only send email"}`);
       connecting = false;
       pasted = '';
       hint = '';
       loadMail();
+      loadCal();
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -50,6 +99,7 @@
     if (!confirm(`Stop sending from ${a.email}?`)) return;
     await fetch(`/api/settings/mail?email=${encodeURIComponent(a.email)}`, { method: 'DELETE' });
     loadMail();
+    loadCal();
   }
   async function saveVideo() {
     try {
@@ -67,6 +117,7 @@
     z = { accountId: a.accountId, clientId: a.clientId, secret: '' };
     guests = b.guests;
     loadMail();
+    loadCal();
   });
 
   async function saveZoom(e) {
@@ -137,12 +188,23 @@
 
 <section class="panel settings-card" id="email">
   <h2>Email accounts</h2>
-  <p class="muted">Accounts Closer Desk can send from, like the pre-call info before a booked call. Each one is connected with permission to send mail only.</p>
+  <p class="muted">Accounts Closer Desk can send from, like the pre-call info before a booked call. Each one can send mail, put booked calls on its calendar and check it for clashes, and sync your emails with leads (sent or received anywhere) onto their history every two minutes.</p>
   {#if mail}
     <ul class="gl">
       {#each mail.accounts as a}
-        <li><span><strong>{a.email}</strong>{#if a.name}<br /><span class="faint">{a.name}</span>{/if}</span>
-          <button class="btn small ghost" onclick={() => removeAcct(a)}>Remove</button></li>
+        <li><span><strong>{a.email}</strong>{#if a.name}<br /><span class="faint">{a.name}</span>{/if}<br /><span class="faint">{a.calendar ? 'Calendar on' : 'No calendar'} · {a.canRead ? (a.syncError ? `Email sync failed: ${a.syncError}` : a.syncedAt ? `Emails with leads synced ${new Date(a.syncedAt).toLocaleTimeString('en-AU', { hour: 'numeric', minute: '2-digit' })}` : 'Email sync starting') : 'Email sync off'} · {a.signature ? 'Has a signature' : 'No signature yet'}</span></span>
+          <span class="row">
+            {#if (!a.calendar || !a.canRead) && mail.ready && !connecting}<button class="btn small" onclick={() => reconnect(a)}>Reconnect for {!a.canRead && !a.calendar ? 'calendar and email sync' : !a.canRead ? 'email sync' : 'calendar'}</button>{/if}
+            {#if a.canRead}<button class="btn small ghost" onclick={syncNow} disabled={syncing}>{syncing ? 'Checking' : 'Check now'}</button>{/if}
+            {#if a.canReadSignature}<button class="btn small ghost" onclick={() => confirm('Replace this signature with the one set in Gmail?') && refreshSig(a)}>Copy from Gmail</button>{/if}
+            <button class="btn small ghost" onclick={() => removeAcct(a)}>Remove</button>
+          </span></li>
+        <li class="sigrow">
+          <details open={!a.signature}>
+            <summary>Signature for {a.email}</summary>
+            {#key a.email + (a.signature ? 1 : 0)}<SignatureEditor email={a.email} html={a.signature} onsaved={() => loadMail()} />{/key}
+          </details>
+        </li>
       {:else}
         <li class="faint">None yet.</li>
       {/each}
@@ -157,7 +219,7 @@
     {:else}
       <form class="zf" onsubmit={finishConnect}>
         <ol class="steps">
-          <li>In the Google tab that opened, sign in as {hint || 'the account'} and allow <b>Send email on your behalf</b>.</li>
+          <li>In the Google tab that opened, sign in as {hint || 'the account'} and allow everything it asks: <b>send email</b>, <b>read your email</b> (only emails with your leads are kept, on their history) and <b>your calendar events</b> (for booking calls on it).</li>
           <li>Google then lands on a page that may not load. That's fine: copy the whole address from the address bar.</li>
           <li>Paste it here.</li>
         </ol>
@@ -171,6 +233,24 @@
     <label class="field vid">Video in the pre-call email
       <span class="gf"><input bind:value={video} inputmode="url" /><button class="btn small" onclick={saveVideo}>Save</button></span>
     </label>
+  {/if}
+</section>
+
+<section class="panel settings-card" id="calendar">
+  <h2>Calendar for booked calls</h2>
+  <p class="muted">Where a call goes when you press Booked on a lead{cal ? ` in ${cal.offer}` : ''}. Before it books, every connected calendar is checked for something at that time.</p>
+  {#if cal}
+    <label class="field">Book calls on
+      <select value={cal.book} onchange={(e) => saveCal({ book: e.currentTarget.value })} disabled={calBusy}>
+        <option value="">{cal.personal ? `Personal (${cal.personal})` : 'Personal'}</option>
+        {#each cal.accounts as a}<option value={a.email} disabled={!a.calendar}>{a.email}{a.calendar ? '' : ' (add calendar access first)'}</option>{/each}
+      </select>
+    </label>
+    {#if cal.book}
+      <label class="skip"><input type="checkbox" checked={cal.copy} onchange={(e) => saveCal({ copy: e.currentTarget.checked })} disabled={calBusy || !cal.personal} />Also put a copy on my personal calendar</label>
+      <p class="faint">The copy is private (no guests, shows you as free so it doesn't double up) and moves or goes away with the real booking.</p>
+    {/if}
+    {#if !cal.accounts.some((a) => a.calendar)}<p class="faint">To book on a work calendar, add calendar access to that address under Email accounts above.</p>{/if}
   {/if}
 </section>
 
@@ -208,6 +288,23 @@
     display: grid;
     gap: 10px;
     max-width: 420px;
+  }
+  .sigrow {
+    display: block !important;
+    border-top: 0 !important;
+    padding-top: 0 !important;
+  }
+  .sigrow summary {
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .skip {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 14px;
+    margin: 10px 0 4px;
   }
   .row {
     display: flex;

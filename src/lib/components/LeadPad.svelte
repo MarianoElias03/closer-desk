@@ -1,4 +1,5 @@
 <script>
+  import ClashCheck from './ClashCheck.svelte';
   import { slide } from 'svelte/transition';
   import { invalidateAll } from '$app/navigation';
   import Icon from './Icon.svelte';
@@ -199,6 +200,7 @@
           {/if}
           <label class="skip"><input type="checkbox" bind:checked={bkSkip} />Already on my calendar</label>
         </div>
+        {#if !bkSkip}<ClashCheck date={bkDate} time={bkTime} />{/if}
         {#if !bkSkip && meetOpts}
           <div class="cb">
             <span class="k">Link</span>

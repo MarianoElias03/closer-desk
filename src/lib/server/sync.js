@@ -1,5 +1,7 @@
 import { db, getSettings, setSetting, listOffers, resolveOffer, linkLeadCalls } from './db.js';
 import { syncCallbackEvents } from './callbackCal.js';
+import { allCalendars, tokenFor, updateCopy, deleteCopy } from './calendars.js';
+import { startMailSync } from './mailSync.js';
 
 const env = process.env;
 
@@ -69,71 +71,96 @@ function offerMatcher() {
   };
 }
 
+/**
+ * Pull booked calls from every connected calendar: your personal one and any email account that allowed
+ * calendar events (e.g. your work address). Each call remembers which calendar it's on (cal_account).
+ * Our private copies (closerDeskCopyOf) and callback reminders (closerDeskLead) are skipped. A meeting
+ * that's on two calendars (you're a guest on one) is kept once, on the calendar that organises it.
+ */
 export async function syncCalendar() {
   const match = offerMatcher();
-  const token = await googleAccessToken();
   const timeMin = new Date(Date.now() - 120 * 864e5).toISOString();
   const timeMax = new Date(Date.now() + 60 * 864e5).toISOString();
-  let pageToken;
   let seen = 0;
   let kept = 0;
   const upsert = db.prepare(`
-    INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, attendees, source, updated_at)
-    VALUES(@id, @offer_id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, @attendees, 'calendar', @now)
+    INSERT INTO calls(id, offer_id, title, prospect, email, phone, start, end, join_url, description, kind, status, attendees, source, updated_at, cal_account)
+    VALUES(@id, @offer_id, @title, @prospect, @email, @phone, @start, @end, @join_url, @description, @kind, @status, @attendees, 'calendar', @now, @cal_account)
     ON CONFLICT(id) DO UPDATE SET title=excluded.title, prospect=excluded.prospect,
       email=COALESCE(excluded.email, calls.email), phone=COALESCE(excluded.phone, calls.phone),
       start=excluded.start, end=excluded.end, join_url=excluded.join_url, description=excluded.description,
-      kind=excluded.kind, status=excluded.status, attendees=excluded.attendees`);
-  const ids = new Set();
-  do {
-    const u = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
-    u.search = new URLSearchParams({
-      timeMin,
-      timeMax,
-      singleEvents: 'true',
-      orderBy: 'startTime',
-      maxResults: '250',
-      showDeleted: 'true',
-      ...(pageToken ? { pageToken } : {})
-    });
-    const res = await fetch(u, { headers: { authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`Calendar API ${res.status}: ${(await res.text()).slice(0, 200)}`);
-    const j = await res.json();
-    const tx = db.transaction((items) => {
-      for (const ev of items) {
-        seen++;
-        const title = ev.summary || '';
-        if (ev.extendedProperties?.private?.closerDeskLead) continue; // our own callback reminders
-        const hit = match(title);
-        if (!hit || !ev.start?.dateTime) continue;
-        const { kind, offerId } = hit;
-        kept++;
-        ids.add(ev.id);
-        const desc = ev.description || '';
-        const guest = (ev.attendees || []).find((a) => !a.self && !a.organizer);
-        const descEmail = desc.match(/Email:-\s*(\S+@\S+)/)?.[1] || null;
-        upsert.run({
-          id: ev.id,
-          offer_id: offerId,
-          title,
-          prospect: guest?.displayName?.trim() || prospectFrom(title),
-          email: guest?.email || descEmail || null,
-          phone: desc.match(PHONE_RE)?.[1]?.replace(/\s+/g, ' ') || null,
-          start: new Date(ev.start.dateTime).toISOString(),
-          end: new Date(ev.end?.dateTime || ev.start.dateTime).toISOString(),
-          join_url: joinUrlFrom(ev),
-          description: desc.slice(0, 4000),
-          kind,
-          status: ev.status === 'cancelled' ? 'cancelled' : 'confirmed',
-          attendees: JSON.stringify((ev.attendees || []).filter((a) => !a.self && !a.resource).map((a) => a.email)),
-          now: new Date().toISOString()
-        });
-      }
-    });
-    tx(j.items || []);
-    pageToken = j.nextPageToken;
-  } while (pageToken);
-  return { seen, kept };
+      kind=excluded.kind, status=excluded.status, attendees=excluded.attendees, cal_account=excluded.cal_account`);
+  const picked = new Map(); // event id -> { ev, acct }
+  const failed = [];
+  for (const { acct, label } of allCalendars()) {
+    let pageToken;
+    try {
+      const token = await tokenFor(acct);
+      do {
+        const u = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+        u.search = new URLSearchParams({ timeMin, timeMax, singleEvents: 'true', orderBy: 'startTime', maxResults: '250', showDeleted: 'true', ...(pageToken ? { pageToken } : {}) });
+        const res = await fetch(u, { headers: { authorization: `Bearer ${token}` } });
+        if (!res.ok) throw new Error(`Calendar API ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const j = await res.json();
+        for (const ev of j.items || []) {
+          seen++;
+          const p = ev.extendedProperties?.private;
+          if (p?.closerDeskLead || p?.closerDeskCopyOf) continue; // our own callback reminders and copies
+          const had = picked.get(ev.id);
+          if (!had || (ev.organizer?.self && !had.ev.organizer?.self)) picked.set(ev.id, { ev, acct });
+        }
+        pageToken = j.nextPageToken;
+      } while (pageToken);
+    } catch (e) {
+      // the personal calendar failing is an error as before; another account just gets noted
+      if (!acct) throw e;
+      failed.push(`${label}: ${e.message}`);
+    }
+  }
+  const before = new Map(db.prepare("SELECT id, start, end, status, copy_id, cal_account FROM calls WHERE copy_id IS NOT NULL").all().map((r) => [r.id, r]));
+  const tx = db.transaction(() => {
+    for (const { ev, acct } of picked.values()) {
+      const title = ev.summary || '';
+      const hit = match(title);
+      if (!hit || !ev.start?.dateTime) continue;
+      const { kind, offerId } = hit;
+      kept++;
+      const desc = ev.description || '';
+      const guest = (ev.attendees || []).find((a) => !a.self && !a.organizer);
+      const descEmail = desc.match(/Email:-\s*(\S+@\S+)/)?.[1] || null;
+      upsert.run({
+        id: ev.id,
+        offer_id: offerId,
+        title,
+        prospect: guest?.displayName?.trim() || prospectFrom(title),
+        email: guest?.email || descEmail || null,
+        phone: desc.match(PHONE_RE)?.[1]?.replace(/\s+/g, ' ') || null,
+        start: new Date(ev.start.dateTime).toISOString(),
+        end: new Date(ev.end?.dateTime || ev.start.dateTime).toISOString(),
+        join_url: joinUrlFrom(ev),
+        description: desc.slice(0, 4000),
+        kind,
+        status: ev.status === 'cancelled' ? 'cancelled' : 'confirmed',
+        attendees: JSON.stringify((ev.attendees || []).filter((a) => !a.self && !a.resource).map((a) => a.email)),
+        now: new Date().toISOString(),
+        cal_account: acct
+      });
+    }
+  });
+  tx();
+  // a booking moved or cancelled on its calendar: its personal copy follows
+  for (const [id, was] of before) {
+    const got = picked.get(id);
+    if (!got || got.acct !== was.cal_account) continue;
+    const ev = got.ev;
+    try {
+      if (ev.status === 'cancelled') await deleteCopy(was.copy_id, id);
+      else if (new Date(ev.start?.dateTime).toISOString() !== was.start || new Date(ev.end?.dateTime || ev.start?.dateTime).toISOString() !== was.end) await updateCopy(was.copy_id, ev, id, was.cal_account);
+    } catch (e) {
+      failed.push(`copy of ${ev.summary || id}: ${e.message}`);
+    }
+  }
+  return { seen, kept, ...(failed.length ? { failed } : {}) };
 }
 
 // ---------- Fathom ----------
@@ -278,6 +305,7 @@ export function connections() {
 let timer = null;
 export function startScheduler() {
   if (timer || process.env.NO_SYNC) return;
+  startMailSync();
   const tick = () => syncAll().catch((e) => console.error('[sync]', e));
   setTimeout(tick, 3000);
   timer = setInterval(tick, 10 * 60 * 1000);

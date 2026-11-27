@@ -1,11 +1,14 @@
 import { redirect, json } from '@sveltejs/kit';
 import { startScheduler } from '$lib/server/sync.js';
+import { startAutomations } from '$lib/server/automations.js';
 import { resolveOffer } from '$lib/server/db.js';
 import { sessionUser, tokenFrom } from '$lib/server/auth.js';
 startScheduler();
+startAutomations();
 
 // open without signing in: the sign-in page and its API, and the MCP endpoint (Alfred has its own token)
-const OPEN = [/^\/login\/?$/, /^\/api\/auth\/(login|setup|status)$/, /^\/mcp\/?$/];
+// and signature images (random ids), so email previews can load them
+const OPEN = [/^\/login\/?$/, /^\/api\/auth\/(login|setup|status)$/, /^\/mcp\/?$/, /^\/api\/mail-images\/[a-f0-9]{24}$/];
 
 export async function handle({ event, resolve }) {
   const path = event.url.pathname;

@@ -537,7 +537,7 @@ export function calendarNote(cal) {
   if (cal.moved) return ', moved on your calendar';
   if (cal.removed) return ', taken off your calendar';
   if (cal.booked)
-    return `, 1-hour call added to your calendar${cal.meeting === 'zoom' ? ' with a Zoom link' : cal.meeting === 'meet' ? ' with Google Meet' : ''}${cal.invited ? `, invite emailed to ${cal.invited}` : ''}${cal.warn ? `. ${cal.warn}` : ''}`;
+    return `, 1-hour call added to ${cal.where || 'your calendar'}${cal.meeting === 'zoom' ? ' with a Zoom link' : cal.meeting === 'meet' ? ' with Google Meet' : ''}${cal.invited ? `, invite emailed to ${cal.invited}` : ''}${cal.warn ? `. ${cal.warn}` : ''}`;
   if (cal.linked) return ', linked to the call already on your calendar';
   if (cal.unbooked) return ', call taken off your calendar';
   return '';

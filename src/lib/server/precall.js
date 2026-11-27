@@ -1,6 +1,6 @@
 import { db, getSettings, setSetting, getColdLead, getOffer, addLeadEntry, logActivity } from './db.js';
 import { Page, renderPdf, pdfSafe } from './pdf.js';
-import { sendMail } from './mail.js';
+import { sendMail, signatureFor, signatureText } from './mail.js';
 import { wallClock } from '../leads.js';
 import { dayKey } from '../time.js';
 
@@ -224,6 +224,7 @@ export async function sendPrecall(offerId, leadId, { from, to, cc = [], subject,
   const video = precallVideo();
   const vid = youtubeId(video);
   const body = String(message || '').trim();
+  const sig = signatureFor(from);
 
   const text = [
     body,
@@ -232,7 +233,8 @@ export async function sendPrecall(offerId, leadId, { from, to, cc = [], subject,
     when ? `Our call: ${when} (Brisbane time)${join ? `\nJoin: ${join}` : ''}` : '',
     video ? `Watch before we speak: ${video}` : '',
     '',
-    `The full snapshot is attached (${filename}).`
+    `The full snapshot is attached (${filename}).`,
+    ...(sig ? ['', signatureText(sig)] : [])
   ]
     .filter((x) => x !== '')
     .join('\n');
@@ -255,6 +257,7 @@ ${video ? `<tr><td style="padding:20px 28px 28px">
   <div style="font-size:11px;font-weight:700;letter-spacing:1.4px;color:#6b7196;margin-bottom:8px">WATCH BEFORE WE SPEAK</div>
   ${vid ? `<a href="${escHtml(video)}"><img src="https://img.youtube.com/vi/${vid}/hqdefault.jpg" width="544" alt="Watch the video" style="width:100%;max-width:544px;border-radius:12px;display:block;border:0"></a><div style="margin-top:12px">${btn(video, 'Watch the video', '#0f1330')}</div>` : btn(video, 'Watch the video', '#0f1330')}
 </td></tr>` : '<tr><td style="padding:0 0 20px"></td></tr>'}
+${sig ? `<tr><td style="padding:0 28px 28px;font-size:14px;line-height:1.5;color:#0f1330">${sig}</td></tr>` : ''}
 </table></td></tr></table></body></html>`;
 
   const id = await sendMail({ from, to: toEmail, cc: ccList, subject, html, text, attachments: [{ filename, type: 'application/pdf', data: pdf }] });
