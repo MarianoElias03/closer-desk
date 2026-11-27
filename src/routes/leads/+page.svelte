@@ -6,8 +6,11 @@
   import LeadImport from '$lib/components/LeadImport.svelte';
   import { FILTERS, isDue, leadMode } from '$lib/leads.js';
   import { money } from '$lib/fmt.js';
+  import { forgetOrder } from '$lib/leadOrder.js';
 
   let { data } = $props();
+  // back on the list: the next lead you open starts a fresh snapshot of it
+  forgetOrder();
 
   const mode = $derived(leadMode(data.offer));
   let importing = $state(false);

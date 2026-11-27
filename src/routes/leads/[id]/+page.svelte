@@ -11,6 +11,7 @@
   import { money } from '$lib/fmt.js';
   import { toast } from '$lib/toast.svelte.js';
   import PreCallPanel from '$lib/components/PreCallPanel.svelte';
+  import { listOrder, dropFromOrder } from '$lib/leadOrder.js';
 
   let { data } = $props();
   // how this offer's leads are worked: dialling, DM setting, or closing only (history, no pad)
@@ -23,6 +24,15 @@
   const query = $derived(viewQuery(data.view));
   const listLabel = $derived(FILTERS.find((f) => f.key === data.view.filter).label);
   const href = (id) => `/leads/${id}${query}`;
+  // previous / next step through the list as it was when you opened it, so marking a lead
+  // (which can move it out of the live list) never loses your place
+  const order = $derived(listOrder(query, data.order));
+  const nav = $derived.by(() => {
+    const at = order.indexOf(lead.id);
+    if (at < 0) return { prev: null, next: order[0] ?? null, position: null, total: order.length };
+    return { prev: order[at - 1] ?? null, next: order[at + 1] ?? null, position: at + 1, total: order.length };
+  });
+  const markedOff = $derived(nav.position != null && data.nav.position == null);
 
   // ---- editable details ----
   // notes aren't edited here: what happened goes in the History
@@ -94,7 +104,9 @@
       const j = await api(`/api/leads/${lead.id}`, 'DELETE');
       toast(`Deleted ${leadName(lead)}${calendarNote(j.calendar)}`);
       formFor = null;
-      goto(data.nav.next ? href(data.nav.next) : `/leads${query}`, { invalidateAll: true });
+      const to = nav.next;
+      dropFromOrder(lead.id);
+      goto(to ? href(to) : `/leads${query}`, { invalidateAll: true });
     } catch (e) {
       toast(e.message, 'error');
     }
@@ -165,10 +177,10 @@
     if (document.querySelector('[role="dialog"]')) return;
     if (e.key === 'ArrowLeft' || e.key === '[') {
       e.preventDefault();
-      step(data.nav.prev, -1);
+      step(nav.prev, -1);
     } else if (e.key === 'ArrowRight' || e.key === ']') {
       e.preventDefault();
-      step(data.nav.next, 1);
+      step(nav.next, 1);
     }
   }
 </script>
@@ -179,17 +191,17 @@
 <nav class="stepper panel" aria-label="Lead navigation">
   <a class="btn small ghost back" href="/leads{query}"><Icon name="left" size={15} />Lead list</a>
   <span class="pos">
-    {#if data.nav.position}
-      <strong class="num">{data.nav.position}</strong> of <span class="num">{data.nav.total}</span> in {listLabel}
+    {#if nav.position}
+      <strong class="num">{nav.position}</strong> of <span class="num">{nav.total}</span> in {listLabel}{#if markedOff}<span class="faint">, marked off</span>{/if}
     {:else}
-      Not in {listLabel} any more<span class="faint">, {data.nav.total} left there</span>
+      Not in {listLabel}<span class="faint">, {nav.total} there</span>
     {/if}{#if data.view.channel}<span class="faint">, {data.view.channel === 'call' ? 'called' : data.view.channel === 'sms' ? 'texted' : 'emailed'}</span>{/if}{#if data.view.q}<span class="faint">, matching "{data.view.q}"</span>{/if}
   </span>
   <div class="arrows">
-    <button class="btn small" onclick={() => step(data.nav.prev, -1)} disabled={!data.nav.prev} title="Previous lead (left arrow)">
+    <button class="btn small" onclick={() => step(nav.prev, -1)} disabled={!nav.prev} title="Previous lead (left arrow)">
       <Icon name="left" size={16} />Previous
     </button>
-    <button class="btn small primary" onclick={() => step(data.nav.next, 1)} disabled={!data.nav.next} title="Next lead (right arrow)">
+    <button class="btn small primary" onclick={() => step(nav.next, 1)} disabled={!nav.next} title="Next lead (right arrow)">
       Next<Icon name="right" size={16} />
     </button>
   </div>
